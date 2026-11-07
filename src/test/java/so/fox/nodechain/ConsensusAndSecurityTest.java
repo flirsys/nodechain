@@ -10,6 +10,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.KeyPair;
 import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.zip.GZIPOutputStream;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Assertions;
@@ -78,7 +80,7 @@ public class ConsensusAndSecurityTest {
    */
   @Test
   public void testInterruptedMiningAbortsCleanly() {
-    Block b = new Block(new Block.Draft(999, "prev", nodeWalletService.address), List.of());
+    Block b = new Block(999, "prev", nodeWalletService.address, List.of());
     Thread.currentThread().interrupt();
     boolean isMined = b.mineBlock(20);
     Assertions.assertFalse(isMined, "Interrupted thread must return false from mineBlock");
@@ -90,9 +92,9 @@ public class ConsensusAndSecurityTest {
    */
   @Test
   public void testDuplicateTxInBlockRejected() {
-    KeyPair kp = CryptoUtil.generateRsaKeyPair();
+    KeyPair kp = CryptoUtil.generateKeyPair();
     String addr1 = CryptoUtil.getAddressFromPublicKey(kp.getPublic());
-    KeyPair kp2 = CryptoUtil.generateRsaKeyPair();
+    KeyPair kp2 = CryptoUtil.generateKeyPair();
     String addr2 = CryptoUtil.getAddressFromPublicKey(kp2.getPublic());
 
     String data = addr1 + "|" + addr2 + "|10|5|0";
@@ -183,7 +185,7 @@ public class ConsensusAndSecurityTest {
       NodeWalletService testService = new NodeWalletService(tempWallet);
       Assertions.assertThrows(IllegalStateException.class, () -> testService.loadWalletFrom(tempWallet));
 
-      KeyPair kp = CryptoUtil.generateRsaKeyPair();
+      KeyPair kp = CryptoUtil.generateKeyPair();
       String badAddrContent = CryptoUtil.encodePrivateKey(kp.getPrivate()) + "\n"
         + CryptoUtil.encodePublicKey(kp.getPublic()) + "\n"
         + "fox0000000000000000000000000000000000000000000000000000000000000000\n";
@@ -199,9 +201,9 @@ public class ConsensusAndSecurityTest {
    */
   @Test
   public void testTransactionArithmeticOverflow() {
-    KeyPair kp = CryptoUtil.generateRsaKeyPair();
+    KeyPair kp = CryptoUtil.generateKeyPair();
     String addr1 = CryptoUtil.getAddressFromPublicKey(kp.getPublic());
-    KeyPair kp2 = CryptoUtil.generateRsaKeyPair();
+    KeyPair kp2 = CryptoUtil.generateKeyPair();
     String addr2 = CryptoUtil.getAddressFromPublicKey(kp2.getPublic());
 
     Transaction overflowTx = new Transaction(
@@ -216,37 +218,42 @@ public class ConsensusAndSecurityTest {
    */
   @Test
   public void testReplayAndSignatureHandshakeValidation() {
-    KeyPair peerKp = CryptoUtil.generateRsaKeyPair();
+    KeyPair peerKp = CryptoUtil.generateKeyPair();
     String peerAddr = CryptoUtil.getAddressFromPublicKey(peerKp.getPublic());
     String pubKeyStr = CryptoUtil.encodePublicKey(peerKp.getPublic());
     long now = System.currentTimeMillis();
+    String sessionNonce = UUID.randomUUID().toString();
+    java.util.Set<String> seenNonces = ConcurrentHashMap.newKeySet();
+    P2pClientManager.HandshakeContext ctx = new P2pClientManager.HandshakeContext("local-id", "foxchain-main-1", now, seenNonces);
 
     HandshakeMessage unsignedMsg = new HandshakeMessage(
-      peerAddr, "foxchain-main-1", 10, "0".repeat(64), 9090, "1.0.0", now, "", ""
+      peerAddr, "foxchain-main-1", 10, "0".repeat(64), 9090, "1.0.0", now, "", "", sessionNonce
     );
-    P2pClientManager.HandshakeContext ctx = new P2pClientManager.HandshakeContext("local-id", "foxchain-main-1", now);
     Assertions.assertFalse(P2pClientManager.isValidHandshake(unsignedMsg, ctx));
 
     long expiredTime = now - 150_000L;
-    String expiredData = peerAddr + "|foxchain-main-1|10|" + "0".repeat(64) + "|9090|" + expiredTime;
+    String expiredNonce = UUID.randomUUID().toString();
+    String expiredData = peerAddr + "|foxchain-main-1|10|" + "0".repeat(64) + "|9090|" + expiredTime + "|" + expiredNonce;
     String expiredSig = CryptoUtil.sign(peerKp.getPrivate(), expiredData);
     HandshakeMessage expiredMsg = new HandshakeMessage(
-      peerAddr, "foxchain-main-1", 10, "0".repeat(64), 9090, "1.0.0", expiredTime, pubKeyStr, expiredSig
+      peerAddr, "foxchain-main-1", 10, "0".repeat(64), 9090, "1.0.0", expiredTime, pubKeyStr, expiredSig, expiredNonce
     );
     Assertions.assertFalse(P2pClientManager.isValidHandshake(expiredMsg, ctx));
 
     long futureTime = now + 90_000L;
-    String futureData = peerAddr + "|foxchain-main-1|10|" + "0".repeat(64) + "|9090|" + futureTime;
+    String futureNonce = UUID.randomUUID().toString();
+    String futureData = peerAddr + "|foxchain-main-1|10|" + "0".repeat(64) + "|9090|" + futureTime + "|" + futureNonce;
     String futureSig = CryptoUtil.sign(peerKp.getPrivate(), futureData);
     HandshakeMessage futureMsg = new HandshakeMessage(
-      peerAddr, "foxchain-main-1", 10, "0".repeat(64), 9090, "1.0.0", futureTime, pubKeyStr, futureSig
+      peerAddr, "foxchain-main-1", 10, "0".repeat(64), 9090, "1.0.0", futureTime, pubKeyStr, futureSig, futureNonce
     );
     Assertions.assertFalse(P2pClientManager.isValidHandshake(futureMsg, ctx));
 
-    String validData = peerAddr + "|foxchain-main-1|10|" + "0".repeat(64) + "|9090|" + now;
+    String validNonce = UUID.randomUUID().toString();
+    String validData = peerAddr + "|foxchain-main-1|10|" + "0".repeat(64) + "|9090|" + now + "|" + validNonce;
     String validSig = CryptoUtil.sign(peerKp.getPrivate(), validData);
     HandshakeMessage validMsg = new HandshakeMessage(
-      peerAddr, "foxchain-main-1", 10, "0".repeat(64), 9090, "1.0.0", now, pubKeyStr, validSig
+      peerAddr, "foxchain-main-1", 10, "0".repeat(64), 9090, "1.0.0", now, pubKeyStr, validSig, validNonce
     );
     Assertions.assertTrue(P2pClientManager.isValidHandshake(validMsg, ctx));
   }
@@ -256,13 +263,13 @@ public class ConsensusAndSecurityTest {
    */
   @Test
   public void testAlreadyConfirmedTransactionRejectedInSimState() {
-    KeyPair kp1 = CryptoUtil.generateRsaKeyPair();
+    KeyPair kp1 = CryptoUtil.generateKeyPair();
     String addr1 = CryptoUtil.getAddressFromPublicKey(kp1.getPublic());
     Account acc1 = blockchainService.getAccount(addr1);
     acc1.balance = 50_000L;
     blockchainService.saveAccount(acc1);
 
-    KeyPair kp2 = CryptoUtil.generateRsaKeyPair();
+    KeyPair kp2 = CryptoUtil.generateKeyPair();
     String addr2 = CryptoUtil.getAddressFromPublicKey(kp2.getPublic());
 
     String data = addr1 + "|" + addr2 + "|500|50|0";
@@ -276,7 +283,7 @@ public class ConsensusAndSecurityTest {
     Assertions.assertNotNull(mined);
 
     Block duplicateBlock = new Block(
-      new Block.Draft(mined.height + 1, mined.hash, nodeWalletService.address),
+      mined.height + 1, mined.hash, nodeWalletService.address,
       List.of(tx)
     );
     duplicateBlock.mineBlock(2);
@@ -290,7 +297,7 @@ public class ConsensusAndSecurityTest {
    */
   @Test
   public void testReadOnlyGetAccountDoesNotCreateDatabaseRecord() {
-    KeyPair kp = CryptoUtil.generateRsaKeyPair();
+    KeyPair kp = CryptoUtil.generateKeyPair();
     String unused = CryptoUtil.getAddressFromPublicKey(kp.getPublic());
 
     Account acc = blockchainService.getAccount(unused);
@@ -308,7 +315,7 @@ public class ConsensusAndSecurityTest {
    */
   @Test
   public void testTransactionAddressNormalizedToLowercaseBeforeHashing() {
-    KeyPair kp = CryptoUtil.generateRsaKeyPair();
+    KeyPair kp = CryptoUtil.generateKeyPair();
     String addr = CryptoUtil.getAddressFromPublicKey(kp.getPublic());
     String upperFrom = addr.toUpperCase();
     String upperTo = addr.toUpperCase();
@@ -330,13 +337,13 @@ public class ConsensusAndSecurityTest {
     int origLimit = nodeConfig.maxMempoolSize;
     try {
       nodeConfig.maxMempoolSize = 2;
-      KeyPair kp = CryptoUtil.generateRsaKeyPair();
+      KeyPair kp = CryptoUtil.generateKeyPair();
       String addr = CryptoUtil.getAddressFromPublicKey(kp.getPublic());
       Account acc = blockchainService.getAccount(addr);
       acc.balance = 100_000L;
       blockchainService.saveAccount(acc);
 
-      KeyPair recKp = CryptoUtil.generateRsaKeyPair();
+      KeyPair recKp = CryptoUtil.generateKeyPair();
       String recAddr = CryptoUtil.getAddressFromPublicKey(recKp.getPublic());
 
       String d0 = addr + "|" + recAddr + "|100|5|0";
@@ -351,7 +358,7 @@ public class ConsensusAndSecurityTest {
       var res1 = blockchainService.submitTransaction(tx1, false);
       Assertions.assertFalse(res1.isError(), "tx1 submission must succeed");
 
-      KeyPair kp2 = CryptoUtil.generateRsaKeyPair();
+      KeyPair kp2 = CryptoUtil.generateKeyPair();
       String addr2 = CryptoUtil.getAddressFromPublicKey(kp2.getPublic());
       Account acc2 = blockchainService.getAccount(addr2);
       acc2.balance = 100_000L;

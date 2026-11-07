@@ -15,7 +15,7 @@ public class CryptoUtilTest {
    */
   @Test
   public void testAddressGenerationAndValidation() {
-    KeyPair kp = CryptoUtil.generateRsaKeyPair();
+    KeyPair kp = CryptoUtil.generateKeyPair();
     String addr = CryptoUtil.getAddressFromPublicKey(kp.getPublic());
 
     Assertions.assertNotNull(addr);
@@ -28,11 +28,11 @@ public class CryptoUtilTest {
   }
 
   /**
-   * Проверяет подписание и верификацию цифровой подписи SHA256withRSA.
+   * Проверяет подписание и верификацию цифровой подписи Ed25519.
    */
   @Test
   public void testSignAndVerify() {
-    KeyPair kp = CryptoUtil.generateRsaKeyPair();
+    KeyPair kp = CryptoUtil.generateKeyPair();
     String data = "fox_test_data_123";
     String sig = CryptoUtil.sign(kp.getPrivate(), data);
 

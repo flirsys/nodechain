@@ -7,12 +7,13 @@
   <img src="https://img.shields.io/badge/Spring_Boot-3.3.5-6DB33F?style=for-the-badge&logo=springboot&logoColor=white" alt="Spring Boot" />
   <img src="https://img.shields.io/badge/SQLite-WAL_Mode-003B57?style=for-the-badge&logo=sqlite&logoColor=white" alt="SQLite" />
   <img src="https://img.shields.io/badge/Consensus-Proof--of--Work-F7931A?style=for-the-badge&logo=bitcoin&logoColor=white" alt="PoW" />
+  <img src="https://img.shields.io/badge/Crypto-Ed25519_%26_RFC_6962-blue?style=for-the-badge" alt="Ed25519" />
   <img src="https://img.shields.io/badge/P2P-Binary_GZIP_Protocol-blueviolet?style=for-the-badge" alt="Binary P2P" />
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License" />
 </p>
 
 > **Full-featured distributed blockchain node built on Java 17 and Spring Boot.**
-> Implemented without heavyweight external blockchain frameworks: pure JDK cryptography (`RSA-2048`, `SHA-256`), lightweight SQLite in WAL mode, custom binary P2P protocol with compression and overflow protection, and a strict REST API for client and wallet integrations.
+> Implemented without heavyweight external blockchain frameworks: pure JDK cryptography (`Ed25519`, `SHA-256`, `RFC 6962 Merkle Tree`), lightweight SQLite in WAL mode, custom binary P2P protocol with compression and overflow protection, standalone SPA client `tiny_pc_client` on Mithril.js, and a strict REST API for client and wallet integrations.
 
 ---
 
@@ -27,6 +28,7 @@
 - [Binary P2P Network Protocol](#-binary-p2p-network-protocol)
 - [Data Layer: SQLite + HikariCP](#-data-layer-sqlite--hikaricp)
 - [REST API v1 (Full Specification)](#-rest-api-v1-full-specification)
+- [Desktop Web Client (tiny_pc_client)](#-desktop-web-client-tiny_pc_client)
 - [Configuration and Environment Variables](#-configuration-and-environment-variables)
 - [Quick Start](#-quick-start)
   - [Building from Source](#building-from-source)
@@ -46,10 +48,10 @@ Most educational or lightweight blockchains suffer from one of two flaws:
 2. Or monstrous monoliths (Hyperledger, Geth, Substrate), where transaction mathematics, consensus rules, and packet wire protocols are obscured behind excessive abstractions.
 
 **NodeChain** is an honest, transparent, and engineered implementation of a decentralized node. No "magic" involved:
-* 🏎️ **Zero Heavyweight Dependencies**: standard Java runtime cryptography (`java.security`).
+* 🏎️ **Zero Heavyweight Dependencies**: standard Java runtime cryptography (`java.security` Ed25519 and SHA-256).
 * 📦 **Efficient Storage**: embedded SQLite database configured in high-performance WAL (`Write-Ahead Logging`) mode backed by HikariCP connection pooling.
-* 🌐 **Real Binary P2P**: custom framing over raw TCP sockets featuring magic bytes, opcodes, mutual signed handshakes, and automatic GZIP compression for large block batches.
-* 🛡️ **Exploit Resilience**: built-in protection against Transaction Malleability, mempool DoS eviction, GZIP bombs, timestamp replay attacks, and invalid nonces.
+* 🌐 **Real Binary P2P**: custom framing over raw TCP sockets featuring magic bytes, opcodes, mutual signed handshakes with session nonces, and automatic GZIP compression for large block batches.
+* 🛡️ **Exploit Resilience**: built-in protection against Transaction Malleability, mempool DoS eviction, GZIP bombs, timestamp replay attacks, RFC 6962 second-preimage attacks, and invalid nonces.
 
 ---
 
@@ -60,7 +62,7 @@ The node consists of cleanly separated subsystems designed around **Static-First
 ```mermaid
 flowchart TB
     subgraph Clients["External World"]
-        Web[Web / Mobile Wallet]
+        Web["tiny_pc_client (Web / SPA)"]
         CLI[cURL / CLI Tools]
         PeerNode[Remote P2P Nodes]
     end
@@ -74,11 +76,11 @@ flowchart TB
         end
 
         subgraph Engine["Core Engine"]
-            Wallet["NodeWalletService\n(nodewallet.dat: RSA-2048)"]
+            Wallet["NodeWalletService\n(nodewallet.dat: Ed25519)"]
             Mempool["Mempool Manager\n(In-Memory + ConcurrentHashMap)"]
             Miner["Auto-Miner Service\n(Scheduled PoW Engine)"]
             Blockchain["BlockchainService\n(State Machine & Fork Resolution)"]
-            Consensus["ConsensusUtil & CryptoUtil\n(Merkle Root, PoW, Signatures)"]
+            Consensus["ConsensusUtil & CryptoUtil\n(Merkle Root, PoW, Ed25519)"]
         end
 
         subgraph Storage["Persistence Layer"]
@@ -119,10 +121,11 @@ flowchart TB
 ## 🔐 Cryptography and Fox Addressing
 
 ### 1. Key Algorithm and Signatures
-* **Asymmetric Algorithm**: `RSA-2048`.
-* **Public Key Format**: X.509 ASN.1, encoded in `Base64`.
-* **Private Key Format**: PKCS#8, encoded in `Base64`.
-* **Digital Signature Algorithm**: `SHA256withRSA`.
+* **Asymmetric Algorithm**: `Ed25519` (RFC 8032) powered by the native `java.security` provider in Java 17+.
+* **Public Key Format**: X.509 SPKI ASN.1, encoded in `Base64` (raw DER key size: strictly 44 bytes, Base64: 60 characters instead of 392 for RSA).
+* **Private Key Format**: PKCS#8 ASN.1, encoded in `Base64` (raw DER key size: strictly 48 bytes, Base64: 64 characters).
+* **Digital Signature Algorithm**: `Ed25519` (raw binary signature: strictly 64 bytes, Base64: 88 characters instead of 344 for RSA).
+* **Performance**: Signature verification and generation is 10–20x faster, while network transmission overhead for keys and signatures is reduced by more than 4x.
 
 ### 2. Fox Address Format
 Wallet addresses in NodeChain are **64-character strings** (`[0-9a-fox]{64}`), deterministically derived from the public key with brand symbols `'f'`, `'o'`, and `'x'` substituted in the prefix:
@@ -139,15 +142,15 @@ Wallet addresses in NodeChain are **64-character strings** (`[0-9a-fox]{64}`), d
 
 ### 3. Canonical Signing Data Format (Anti-Malleability)
 Transactions are strictly signed over a deterministic canonical string delimited by `|`:
-- If comment is empty:  
+- If comment is empty or contains only whitespace:  
   `from|to|amount|fee|nonce`
 - If comment is present:  
-  `from|to|amount|fee|nonce|comment`
+  `from|to|amount|fee|nonce|comment.trim()`
 
 The transaction hash is computed from:  
 `from|to|amount|fee|nonce|comment|signature`
 
-All addresses are normalized to **lowercase** prior to hashing and verification, preventing case-mismatched hash divergence.
+All addresses are normalized to **lowercase** prior to hashing and verification, and comments are trimmed, preventing signature or hash divergence between nodes and clients.
 
 ---
 
@@ -197,18 +200,24 @@ The miner increments the block `nonce` until the block hash satisfies difficulty
 - **Block Hash** = `SHA256(Block Payload)`
 - **Valid PoW** = `Block Hash` begins with `difficulty` leading zeros (`00...0`)
 
-### 3. Merkle Tree
-Transaction hashes are paired and hashed recursively bottom-up. If the count of nodes at any level is odd, the last hash is duplicated. For empty blocks, `merkleRoot = "0"`.
+### 3. Merkle Tree (RFC 6962 Domain Separation)
+To protect against Second Preimage Attacks—where an internal Merkle tree node is submitted as a leaf transaction—the hashing implements strict domain separation in compliance with RFC 6962:
+* **Transaction Leaves (`Leaf`)**: hashed with prefix `00`:  
+  `H_leaf = SHA256("00" + tx.hash)`
+* **Internal Nodes (`Internal`)**: concatenated and hashed with prefix `01`:  
+  `H_parent = SHA256("01" + H_left + H_right)`
+* If the number of nodes at any level is odd, the last element is duplicated.
+* For empty blocks without transactions, `merkleRoot = "0"`.
 
 ```mermaid
 graph TD
-    Root["Merkle Root: H(H01 + H23)"]
-    H01["H01: H(H0 + H1)"]
-    H23["H23: H(H2 + H3)"]
-    H0["H0: Tx0 Hash"]
-    H1["H1: Tx1 Hash"]
-    H2["H2: Tx2 Hash"]
-    H3["H3: Tx3 Hash (or duplicate)"]
+    Root["Merkle Root: H('01' + H01 + H23)"]
+    H01["H01: H('01' + H0 + H1)"]
+    H23["H23: H('01' + H2 + H3)"]
+    H0["H0: H('00' + Tx0 Hash)"]
+    H1["H1: H('00' + Tx1 Hash)"]
+    H2["H2: H('00' + Tx2 Hash)"]
+    H3["H3: H('00' + Tx3 Hash or duplicate)"]
 
     Root --> H01
     Root --> H23
@@ -262,11 +271,12 @@ sequenceDiagram
     end
 ```
 
-### Step-Back Fork Locator
+### Step-Back Fork Locator and Loop Protection
 If an incoming block batch does not connect to the tip of the local chain:
-1. The node automatically steps back along the chain in increments of 20 blocks (`Math.max(1, lowestReceived - 20)`) and sends a `GET_BLOCKS` request.
-2. Steps repeat until a locally known common ancestor is identified.
-3. Upon verifying superior cumulative chain work (`branchWork > curWork`), the node executes simulation and an atomic `reorganizeChain`.
+1. **Reorganization Depth Limit (`MAX_REORG_DEPTH = 100`)**: the node never rolls back more than 100 blocks from the current tip, safeguarding the network from deep Long-Range attacks.
+2. **Step-Back**: the node automatically steps back along the chain in increments of 20 blocks (`Math.max(1, lowestReceived - 20)`) and sends a `GET_BLOCKS` request.
+3. **Step-Back Loop Guard**: the `peerStepBackCount` counter monitors consecutive step-back requests per connection. If a peer fails to connect branches and triggers more than 10 consecutive step-backs (`stepBacks > 10`), the TCP connection is immediately terminated, neutralizing DoS loops.
+4. Upon locating a locally known Common Ancestor and verifying superior cumulative chain work (`branchWork > curWork`), the node executes dry-run simulation and an atomic `reorganizeChain`.
 
 ---
 
@@ -307,7 +317,7 @@ To eliminate overhead and maximize sync throughput, nodes communicate over a cus
 
 | OpCode | Hex | Name | Purpose |
 | :---: | :---: | :--- | :--- |
-| **`1`** | `0x01` | `HANDSHAKE` | Initial greeting carrying cryptographic node signature. |
+| **`1`** | `0x01` | `HANDSHAKE` | Initial greeting carrying cryptographic node signature and session nonce. |
 | **`2`** | `0x02` | `HANDSHAKE_ACK` | Mutual handshake acknowledgment with local chain state. |
 | **`3`** | `0x03` | `PING` | Peer keep-alive check (dispatched every 20 seconds). |
 | **`4`** | `0x04` | `PONG` | Heartbeat response (updates peer `last_seen` timestamp). |
@@ -331,15 +341,18 @@ Incoming TCP connections are sandboxed: until the remote node delivers a valid `
   "p2pPort": 9090,
   "version": "1.0.0",
   "timestamp": 1730912450123,
-  "publicKey": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A...",
-  "signature": "kF8aZ19QW..."
+  "publicKey": "MCowBQYDK2VwAyEA4Q8w8i...",
+  "signature": "81c03fa99b1a7d...",
+  "sessionNonce": "b6a8e847-f495-46f9-b4b1-8406734d8ef0"
 }
 ```
 
-* `nodeId` must strictly match the fox address calculated from `publicKey`.
-* Signed data: `nodeId|chainId|height|latestBlockHash|p2pPort|timestamp`.
-* Timestamp acceptance window: -60s to +120s from node's local clock (anti-replay guard).
+* `nodeId` must strictly match the fox address calculated from `publicKey` (Ed25519).
+* Signed data: `nodeId|chainId|height|latestBlockHash|p2pPort|timestamp|sessionNonce`.
+* **Strict Nonce Anti-Replay Guard**: the `sessionNonce` field is strictly required. All seen nonces are registered in `seenHandshakeNonces`. Replayed handshake frames are rejected immediately. Stale nonces are automatically pruned when the cache exceeds 2,000 entries.
+* Timestamp acceptance window: -60s to +120s from node's local clock.
 * **Bidirectional Gossip**: upon accepting a connection, the node records the peer's listening `p2pPort` in the `peers` table and immediately triggers peer exchange via `GET_PEERS` / `PEERS_LIST`.
+* **Genesis Adoption on Fast-Sync (`adoptPeerGenesisBlock`)**: a fresh node starting at height 0 adopts the remote peer's genesis block if valid (`Block.createGenesis(remoteGenesis.minerAddress)`) and if no explicit `blockchain.genesis-address` was configured locally.
 
 ---
 
@@ -412,7 +425,7 @@ CREATE TABLE IF NOT EXISTS peers (
 
 ## 🌐 REST API v1 (Full Specification)
 
-API listens by default on port `8080` with CORS support for web wallets and block explorers.
+API listens by default on port `8080` with CORS support for web wallets and block explorers (`originPatterns = "*"`).
 
 ### 1. Address State
 Returns confirmed balance, unconfirmed balance (accounting for pending outgoing transactions in mempool), current `nonce`, and total transaction count.
@@ -477,7 +490,7 @@ Inspects unconfirmed transactions currently queued for mining.
         "amount": 50000,
         "fee": 50,
         "nonce": 0,
-        "publicKey": "MIIBIj...",
+        "publicKey": "MCowBQYDK2VwAyEA...",
         "signature": "sig...",
         "comment": "Coffee payment",
         "timestamp": 1730912460000,
@@ -534,8 +547,8 @@ Validates cryptographic signature, sender balance, and sequential nonce, inserts
   * `amount` (*long*, required) — transfer amount in atomic units ($> 0$).
   * `fee` (*long*, optional, default: `50`) — network fee in atomic units ($\ge 0$).
   * `nonce` (*long*, required) — sequential transaction counter ($\ge 0$).
-  * `publicKey` (*string*, required) — sender's public key in Base64 (X.509 ASN.1).
-  * `signature` (*string*, required) — digital signature in Base64 (`SHA256withRSA`).
+  * `publicKey` (*string*, required) — sender's public key in Base64 (X.509 SPKI Ed25519, 60 characters).
+  * `signature` (*string*, required) — digital signature in Base64 (`Ed25519`, 88 characters).
   * `comment` (*string*, optional, default: `""`, max 256 characters) — optional note.
 * **Request Body**:
   ```json
@@ -545,8 +558,8 @@ Validates cryptographic signature, sender balance, and sequential nonce, inserts
     "amount": 10000,
     "fee": 50,
     "nonce": 0,
-    "publicKey": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0...",
-    "signature": "Yh31Z+QJ8k2...",
+    "publicKey": "MCowBQYDK2VwAyEA4Q8w8i02w9Gk2h6H2M7lFk4mP0...",
+    "signature": "81c03fa99b1a7d6e5c4b3a2f1e0d9c8b7a6f5e4d3c2b1a0f...",
     "comment": "Transfer to friend"
   }
   ```
@@ -571,7 +584,7 @@ Validates cryptographic signature, sender balance, and sequential nonce, inserts
   * `409 Conflict`: `{"code": 409, "message": "Транзакция отклонена: переполнение суммы и комиссии"}`
   * `409 Conflict`: `{"code": 409, "message": "Транзакция отклонена"}` (missing required fields)
   * `415 Unsupported Media Type`: `{"code": 415, "message": "Неподдерживаемый тип медиа"}` (non-JSON Content-Type)
-  * `429 Too Many Requests`: `{"code": 429, "message": "Mempool переполнен"}`
+  * `429 Too Many Requests`: `{"code": 429, "message": "Mempool переполнен"}` or rate-limiting threshold exceeded
 
 ---
 
@@ -650,6 +663,33 @@ Universal endpoint for inspecting chain blocks.
 
 ---
 
+## 💻 Desktop Web Client (tiny_pc_client)
+
+The repository includes a standalone, ultra-lightweight SPA client (`tiny_pc_client`) running directly in the browser with zero Node.js, npm, or bundler dependencies:
+
+```text
+tiny_pc_client/
+├── index.html       # Single HTML entry point (dark theme, responsive layout)
+├── css/
+│   └── style.css    # Custom lightweight styles without bulky UI frameworks
+└── js/
+    ├── mithril.min.js # Reactive micro-framework (8 KiB gzipped)
+    ├── crypto.js    # Web Crypto API module (Ed25519)
+    ├── api.js       # HTTP client connecting to NodeChain REST API
+    ├── state.js     # Centralized state manager with automated nonce pipelining
+    └── app.js       # Interface components (Wallet, Mempool, Explorer, Dev Faucet)
+```
+
+### Key Client Features:
+* 🔑 **100% Non-Custodial & Web Crypto API**: `Ed25519` key generation and storage operate strictly in the browser (`window.crypto.subtle`). Private keys never leave the user's machine.
+* 📥 **One-Click Miner Wallet Import (`nodewallet.dat`)**: Paste the 3 lines from your node's `nodewallet.dat` directly into the import form for immediate access to mined blocks and pre-mined allocations.
+* 🚀 **Nonce Pipelining**: Inspects the node's mempool and dynamically computes `nextNonce` factoring in pending outgoing transactions, enabling rapid transaction sequences without waiting for block confirmations.
+* 🪙 **Dev Tool & Faucet**: Built-in developer console to dispense coins from the miner wallet and broadcast test stress-transactions across the network.
+* 🔍 **Built-in Block & Tx Explorer**: Real-time lookups by block height or hash, detailed transaction views, and confirmation count tracking.
+* 🌐 **Zero-Config Local Mode**: Can be opened directly from the file system (`file:///.../index.html`) or via any static file server (`python -m http.server 3000`) thanks to wildcard CORS `originPatterns` on the node.
+
+---
+
 ## ⚙ Configuration and Environment Variables
 
 NodeChain supports a two-tier configuration hierarchy:
@@ -720,7 +760,7 @@ java -jar node.jar
 
 On first launch, the node executes the following bootstrap sequence:
 1. Generates `server.properties` with default overrides if missing.
-2. Creates an RSA-2048 keypair and saves the miner wallet to `nodewallet.dat`.
+2. Creates an Ed25519 keypair and saves the miner wallet to `nodewallet.dat`.
 3. Initializes SQLite schema in `sqlite.db` and writes deterministic Genesis Block #0.
 4. Opens binary P2P server on port `9090` and REST API on port `8080`.
 5. Starts the auto-miner service assembling pending transactions into blocks.
@@ -766,7 +806,7 @@ P2P peer verified & handshake confirmed for node f5ox...
 
 Because NodeChain nodes operate on a non-custodial model, transactions must be signed client-side.
 
-Below is a complete **Python 3** script that generates an RSA-2048 keypair, calculates the fox address, signs a transaction canonically, and submits it to the node REST API:
+Below is a complete **Python 3** script that generates an Ed25519 keypair, calculates the fox address, signs a transaction canonically, and submits it to the node REST API:
 
 <details>
 <summary>▶ Show transaction submission script (<code>wallet_client.py</code>)</summary>
@@ -776,14 +816,14 @@ import base64
 import hashlib
 import json
 import urllib.request
-from cryptography.hazmat.primitives.asymmetric import rsa, padding
-from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ed25519
+from cryptography.hazmat.primitives import serialization
 
-# 1. Generate RSA-2048 Keypair
-private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+# 1. Generate Ed25519 Keypair
+private_key = ed25519.Ed25519PrivateKey.generate()
 public_key = private_key.public_key()
 
-# 2. Export public key to Base64 (X.509 DER)
+# 2. Export public key to Base64 (X.509 SPKI DER)
 pub_der = public_key.public_bytes(
     encoding=serialization.Encoding.DER,
     format=serialization.PublicFormat.SubjectPublicKeyInfo
@@ -816,19 +856,16 @@ fee = 50
 nonce = 0
 comment = "Hello from Python Client!"
 
-# Canonical signing string (handles presence or absence of comment)
+# Canonical signing string (handles trimmed comment)
+clean_comment = comment.strip() if comment else ""
 canonical = (
-    f"{sender_address}|{recipient_address}|{amount}|{fee}|{nonce}|{comment}"
-    if comment
+    f"{sender_address}|{recipient_address}|{amount}|{fee}|{nonce}|{clean_comment}"
+    if clean_comment
     else f"{sender_address}|{recipient_address}|{amount}|{fee}|{nonce}"
 )
 
-# 5. Sign with SHA256withRSA
-signature_bytes = private_key.sign(
-    canonical.encode("utf-8"),
-    padding.PKCS1v15(),
-    hashes.SHA256()
-)
+# 5. Sign with Ed25519 (RFC 8032)
+signature_bytes = private_key.sign(canonical.encode("utf-8"))
 sig_b64 = base64.b64encode(signature_bytes).decode("utf-8")
 
 payload = {
@@ -839,7 +876,7 @@ payload = {
     "nonce": nonce,
     "publicKey": pub_b64,
     "signature": sig_b64,
-    "comment": comment
+    "comment": clean_comment
 }
 
 # 6. Submit to node via REST API
@@ -864,7 +901,7 @@ except urllib.error.HTTPError as e:
 NodeChain implements algorithmic defenses against common blockchain attacks:
 
 1. **Transaction Malleability Protection**:
-   Signatures are applied strictly over a canonical delimiter-separated argument string. No extraneous metadata or comment injections can be altered without invalidating the RSA signature.
+   Signatures are applied strictly over a canonical delimiter-separated argument string (`from|to|amount|fee|nonce|comment.trim()`). No extraneous metadata, whitespace injection, or altered parameters can pass validation without breaking the Ed25519 signature.
 2. **DoS Mempool Eviction Protection (Tail Nonce Rule)**:
    When reaching `maxMempoolSize`, transactions with lower fees can only be evicted if they are **tail nonces**. Evicting `nonce 0` is prohibited if dependent transactions (`nonce 1`, `nonce 2`) exist in mempool. Accounts with zero balance cannot displace valid transactions.
 3. **Network GZIP Bomb Defense**:
@@ -873,20 +910,26 @@ NodeChain implements algorithmic defenses against common blockchain attacks:
    All balance additions and subtractions for transactions, fees, and mining rewards utilize `Math.addExact()` and `Math.subtractExact()`. Negative values or inputs overflowing `Long.MAX_VALUE` trigger consensus errors.
 5. **Timestamp Drift Protection**:
    Blocks carrying timestamps from the distant future ($>10$ minutes) or older than the previous block are rejected instantly.
-6. **Per-Port & Per-Opcode Rate Limiting**:
-   Incoming network packets are rate-limited per `IP:port:opcode`. Block synchronization requests have a 10 ms window; administrative commands have a 100 ms window.
+6. **Per-IP Rate Limiting with Localhost Exemption**:
+   Incoming network packets are rate-limited per time window for each `IP:opcode` pair from external hosts. Local addresses (`127.0.0.1`, `localhost`, `::1`) are exempt from limits to enable uninterrupted multi-node cluster testing. Memory tables in P2P (`seenHandshakeNonces > 2000`) and REST API (`lastRestTxTime > 1000`) automatically prune stale entries to prevent out-of-memory DoS.
 7. **Global Exception Handling & 500 Immunity (API Robustness)**:
    All HTTP requests pass through `GlobalExceptionHandler`. Syntax errors in JSON payloads, type mismatches, invalid Content-Types, or unsupported HTTP methods return strict client errors (`400 Bad Request`, `405 Method Not Allowed`, `415 Unsupported Media Type`, `409 Conflict`), preventing uncaught `500 Internal Server Error` responses.
 8. **Node Wallet Integrity Self-Test (Challenge-Response)**:
-   During bootstrap, `NodeWalletService` validates the keypair by signing a test payload (`challenge-nodewallet.dat`). Any file corruption or key mismatch halts node startup prior to opening network ports, preventing miner reward loss.
+   During bootstrap, `NodeWalletService` validates the Ed25519 keypair by signing a test payload (`challenge-nodewallet.dat`). Any file corruption or key mismatch halts node startup prior to opening network ports, preventing miner reward loss.
 9. **Anti-Float Coercion Protection**:
    Jackson deserialization disables float-to-integer coercion (`featuresToDisable(ACCEPT_FLOAT_AS_INT)` and `spring.jackson.deserialization.accept-float-as-int=false`). Fractional inputs in amounts or fees are rejected immediately with `400 Bad Request`.
+10. **Reorganization Depth Ceiling & Step-Back Loop Guard (`MAX_REORG_DEPTH = 100`)**:
+    Chain reorganization depth is capped at 100 blocks from the current tip. Attempts by peers to force deeper rollbacks are rejected. If a peer fails to locate a common ancestor after 10 consecutive step-back requests (`peerStepBackCount > 10`), the connection is forcibly terminated.
+11. **Merkle Second-Preimage Collision Defense (RFC 6962 Domain Separation)**:
+    Transaction leaves are hashed with prefix `00` (`H_leaf = SHA256("00" + tx.hash)`), and internal nodes with prefix `01` (`H_parent = SHA256("01" + H_left + H_right)`), mathematically preventing intermediate nodes from being presented as leaf transactions.
+12. **Genesis Block & Pre-mine Protection (`adoptPeerGenesisBlock`)**:
+    A clean node accepts a peer's genesis block only if it strictly matches canonical structure `Block.createGenesis(minerAddress)`, and if no custom `blockchain.genesis-address` was specified in the local configuration.
 
 ---
 
 ## 🧪 Testing
 
-The codebase is covered by comprehensive integration and fuzzing suites (totaling **64 tests** passing with zero failures):
+The codebase is covered by comprehensive integration and fuzzing suites (totaling **73 tests** passing with 100% success in ~10 seconds):
 
 ```bash
 # Run all project tests
@@ -907,9 +950,20 @@ mvn test
   * Boundary limits (pagination clamps, comment length $>256$ chars, case-insensitivity of addresses).
   * Injection attempts (SQLi, null bytes) and unsupported HTTP methods / Content-Types.
   * Confirmed API resilience: zero crashes into `500 Internal Server Error`.
+* `ClaudeReviewVerificationTest.java` (9 tests):
+  * Comprehensive verification of security audit findings and architectural fixes.
+  * Peer genesis block adoption for fresh nodes and protection against pre-mine tampering.
+  * Cross-Chain Replay analysis and chain domain separation.
+  * Overflow-safe ChainWork calculations with static difficulty.
+  * P2P request rate limiting for external IPs and localhost exemption.
+  * Handshake replay protection via strict `sessionNonce`.
+  * DoS defense: fast transaction format validation before heavy digital signature checks.
+  * Merkle Tree: RFC 6962 strict domain separation for leaves (`00`) and internal nodes (`01`).
+  * Ed25519: compact keys (44 bytes DER / 60 Base64) and signatures (64 bytes DER / 88 Base64).
+  * Safe history step-back mathematics (`-20`).
 * `MultiNodeNetworkTest.java` (10 tests):
   * Integration tests of a real P2P cluster composed of 2 and 3 independent nodes running on distinct ports and SQLite databases.
-  * Mutual authentication and cryptographic handshake with RSA signatures.
+  * Mutual authentication and cryptographic handshake with Ed25519 signatures.
   * Mempool transaction synchronization via Gossip (`NEW_TX_ANNOUNCE`).
   * Real-time propagation of newly mined blocks (`NEW_BLOCK_ANNOUNCE`).
   * Fast-Sync (Initial Block Download, IBD) for joining nodes using batched `GET_BLOCKS`.
@@ -928,7 +982,7 @@ mvn test
   * Tail nonce eviction rules in saturated mempools.
 * `CryptoUtilTest.java` (2 tests):
   * Correctness of 64-character fox-address generation and brand character placement.
-  * RSA-2048 (`SHA256withRSA`) signature generation and verification.
+  * Ed25519 (RFC 8032) signature generation and verification.
 * `NodePacketTest.java` (2 tests):
   * Binary framing serialization and deserialization with MAGIC.
   * Automatic GZIP compression threshold for payloads $>128$ bytes.
@@ -941,9 +995,17 @@ mvn test
 nodechain/
 ├── pom.xml                   # Maven build configuration (Java 17, Spring Boot 3.3.5)
 ├── README.md                 # Project documentation (Russian)
-├── README_EN.md              # Project documentation (English)
-├── nodewallet.dat            # Node keys (RSA-2048) and fox address
-├── server.properties         # Local user configuration overrides
+├── README.EN.md              # Project documentation (English)
+├── tiny_pc_client/           # Standalone web client on Mithril.js (Ed25519 SPA)
+│   ├── index.html            # Single HTML entry point (dark theme, responsive)
+│   ├── css/
+│   │   └── style.css         # Custom lightweight styling
+│   └── js/
+│       ├── mithril.min.js    # Reactive micro-framework (8 KiB gzipped)
+│       ├── crypto.js         # Web Crypto API module (Ed25519)
+│       ├── api.js            # NodeChain REST API client
+│       ├── state.js          # Reactive state store with nonce pipelining
+│       └── app.js            # UI components (Wallet, Mempool, Explorer, Faucet)
 ├── src/main/java/so/fox/nodechain/
 │   ├── NodechainApplication.java   # Spring Boot entry point
 │   ├── api/
@@ -955,10 +1017,10 @@ nodechain/
 │   ├── core/
 │   │   ├── BlockchainService.java  # Mempool, mining, forks, and balances
 │   │   ├── ConsensusUtil.java      # Consensus rules, PoW, and Merkle tree
-│   │   ├── NodeWalletService.java  # RSA wallet management and challenge test
+│   │   ├── NodeWalletService.java  # Ed25519 wallet management and challenge test
 │   │   └── Result.java             # Monolithic typed result (Errors as Values)
 │   ├── crypto/
-│   │   └── CryptoUtil.java         # RSA-2048, SHA-256, and fox addressing
+│   │   └── CryptoUtil.java         # Ed25519, SHA-256, and fox addressing
 │   ├── model/
 │   │   ├── Account.java            # Account state model (balance, nonce)
 │   │   ├── Block.java              # Block model (header, PoW, Merkle root)
@@ -979,6 +1041,7 @@ nodechain/
 │   └── application.properties      # Default application properties
 └── src/test/java/so/fox/nodechain/
     ├── BlockchainIntegrationTest.java      # API, mining, and reorg tests
+    ├── ClaudeReviewVerificationTest.java   # Security audit verification tests
     ├── ClientApiFuzzAndRobustnessTest.java # API fuzzing and 500 error defense
     ├── ConsensusAndSecurityTest.java       # Security, P2P, and PoW tests
     ├── CryptoUtilTest.java                 # Crypto and address unit tests
@@ -991,4 +1054,3 @@ nodechain/
 <p align="center">
   Crafted with ❤️ and attention to detail. No clutter, only clean architecture and robust code.
 </p>
-

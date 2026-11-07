@@ -45,13 +45,15 @@ public class P2pClientManager {
   private static final long MIN_REQUEST_INTERVAL_MS = 100L;
   private static final String VERSION = "1.0.0";
 
-  // Валидирует криптографическое рукопожатие сетевого узла с обязательной подписью RSA
+  // Валидирует криптографическое рукопожатие сетевого узла с обязательной цифровой подписью
   public static boolean isValidHandshake(HandshakeMessage msg, HandshakeContext ctx) {
     if (msg == null || ctx == null || ctx.chainId() == null || !ctx.chainId().equals(msg.chainId())) return false;
     if (msg.nodeId() == null || msg.nodeId().isBlank() || msg.nodeId().equalsIgnoreCase(ctx.localNodeId())) return false;
     if (msg.height() < 0 || msg.p2pPort() < 0 || msg.p2pPort() > 65535) return false;
     if (msg.latestBlockHash() == null || msg.latestBlockHash().length() != 64) return false;
     if (msg.timestamp() <= 0 || ctx.now() < (msg.timestamp() - 60_000L) || ctx.now() > (msg.timestamp() + 120_000L)) return false;
+    if (msg.sessionNonce() == null || msg.sessionNonce().isBlank()) return false;
+    if (ctx.seenNonces() == null || !ctx.seenNonces().add(msg.sessionNonce())) return false;
 
     if (msg.publicKey() == null || msg.publicKey().isBlank()) return false;
     if (msg.signature() == null || msg.signature().isBlank()) return false;
@@ -81,6 +83,8 @@ public class P2pClientManager {
   private final List<PeerConnection> connections = new CopyOnWriteArrayList<>();
   private final Semaphore connectionSlots = new Semaphore(MAX_CONNECTIONS);
   private final Map<String, Long> lastRequestTime = new ConcurrentHashMap<>();
+  private final java.util.Set<String> seenHandshakeNonces = ConcurrentHashMap.newKeySet();
+  private final Map<PeerConnection, Integer> peerStepBackCount = new ConcurrentHashMap<>();
   private final AtomicBoolean isRunning = new AtomicBoolean(false);
 
   private volatile String nodeId = UUID.randomUUID().toString();
@@ -104,8 +108,7 @@ public class P2pClientManager {
   // Запускает TCP-сервер, циклы синхронизации и heartbeats
   @PostConstruct
   public void start() {
-    if (nodeWalletService.address != null && !nodeWalletService.address.isEmpty())
-      this.nodeId = nodeWalletService.address;
+    if (nodeWalletService.address != null && !nodeWalletService.address.isEmpty()) this.nodeId = nodeWalletService.address;
     startServer();
 
     scheduler = Executors.newScheduledThreadPool(2, daemonFactory("p2p-client-manager"));
@@ -135,8 +138,11 @@ public class P2pClientManager {
   public void onDisconnected(PeerConnection conn) {
     if (conn == null) return;
     if (connections.remove(conn)) connectionSlots.release();
-    String hostPrefix = conn.getRemoteHost() + ":" + conn.getRemotePort() + ":";
-    lastRequestTime.keySet().removeIf(k -> k.startsWith(hostPrefix));
+    peerStepBackCount.remove(conn);
+    if (isLocalAddress(conn.getRemoteHost())) {
+      String hostPrefix = conn.getRemoteHost() + ":" + conn.getRemotePort() + ":";
+      lastRequestTime.keySet().removeIf(k -> k.startsWith(hostPrefix));
+    }
     log.info("P2P peer disconnected: {}:{}", conn.getRemoteHost(), conn.getRemotePort());
   }
 
@@ -234,6 +240,15 @@ public class P2pClientManager {
     while (isRunning.get() && serverSocket != null && !serverSocket.isClosed()) {
       try {
         Socket socket = serverSocket.accept();
+        String remoteIp = socket.getInetAddress() != null ? socket.getInetAddress().getHostAddress() : "";
+        if (!isLocalAddress(remoteIp)) {
+          long ipConns = connections.stream().filter(c -> c.getRemoteHost().equals(remoteIp)).count();
+          if (ipConns >= 8) {
+            socket.close();
+            log.warn("Rejected incoming P2P connection from {}: limit per IP reached", remoteIp);
+            continue;
+          }
+        }
         if (!connectionSlots.tryAcquire()) {
           socket.close();
           log.warn("Rejected incoming P2P connection: limit of {} reached", MAX_CONNECTIONS);
@@ -269,7 +284,9 @@ public class P2pClientManager {
   private HandshakeMessage buildHandshake(Block latest) {
     long now = System.currentTimeMillis();
     String pubKeyStr = CryptoUtil.encodePublicKey(nodeWalletService.publicKey);
-    String dataToSign = nodeId + "|" + nodeConfig.chainId + "|" + latest.height + "|" + latest.hash + "|" + nodeConfig.p2pPort + "|" + now;
+    String sessionNonce = UUID.randomUUID().toString();
+    seenHandshakeNonces.add(sessionNonce);
+    String dataToSign = nodeId + "|" + nodeConfig.chainId + "|" + latest.height + "|" + latest.hash + "|" + nodeConfig.p2pPort + "|" + now + "|" + sessionNonce;
     String sig = CryptoUtil.sign(nodeWalletService.privateKey, dataToSign);
     return new HandshakeMessage(
       nodeId,
@@ -280,7 +297,8 @@ public class P2pClientManager {
       VERSION,
       now,
       pubKeyStr,
-      sig
+      sig,
+      sessionNonce
     );
   }
 
@@ -298,14 +316,24 @@ public class P2pClientManager {
     }
   }
 
+  // Проверяет, является ли IP локальным адресом хоста
+  public static boolean isLocalAddress(String host) {
+    if (host == null) return false;
+    return "127.0.0.1".equals(host) || "localhost".equalsIgnoreCase(host)
+      || "0:0:0:0:0:0:0:1".equals(host) || "::1".equals(host);
+  }
+
   private boolean isRateLimited(PeerConnection conn, byte op) {
     if (op == OpCode.PONG) return false;
-    String key = conn.getRemoteHost() + ":" + conn.getRemotePort() + ":" + op;
+    String host = conn.getRemoteHost();
+    if (isLocalAddress(host)) return false;
+
+    String key = host + ":" + op;
     long now = System.currentTimeMillis();
     Long last = lastRequestTime.get(key);
     long minInterval = (op == OpCode.NEW_TX_ANNOUNCE || op == OpCode.BLOCKS_DATA || op == OpCode.GET_BLOCKS) ? 10L : MIN_REQUEST_INTERVAL_MS;
     if (last != null && (now - last) < minInterval) {
-      log.warn("Rate limit exceeded for opcode {} from {}:{}", op, conn.getRemoteHost(), conn.getRemotePort());
+      log.warn("Rate limit exceeded for opcode {} from {}", op, host);
       return true;
     }
     if (lastRequestTime.size() > 500) {
@@ -317,6 +345,7 @@ public class P2pClientManager {
 
   private void pruneRateLimitMap(long now) {
     lastRequestTime.entrySet().removeIf(e -> (now - e.getValue()) > 60_000L);
+    if (seenHandshakeNonces.size() > 2000) seenHandshakeNonces.clear();
   }
 
   private void handlePing(PeerConnection conn, NodePacket pkt) {
@@ -366,6 +395,16 @@ public class P2pClientManager {
 
     List<Block> blocks = payload.blocks();
     Block localLatest = blockchainService.getLatestBlockHeader();
+
+    if (localLatest.height == 0 && !blocks.isEmpty() && blocks.get(0).height == 0) {
+      Block remoteGenesis = blocks.get(0);
+      if (blockchainService.adoptPeerGenesisBlock(remoteGenesis)) {
+        localLatest = remoteGenesis;
+        blocks = blocks.subList(1, blocks.size());
+        if (blocks.isEmpty()) return;
+      }
+    }
+
     boolean isAllApplied = applySequentialBlocks(blocks, localLatest);
 
     if (!isAllApplied) {
@@ -374,6 +413,13 @@ public class P2pClientManager {
     }
 
     if (!isAllApplied) {
+      int stepBacks = peerStepBackCount.merge(conn, 1, Integer::sum);
+      if (stepBacks > 10) {
+        log.warn("Peer {} exceeded step-back limit, closing connection", conn.getRemoteHost());
+        conn.close();
+        peerStepBackCount.remove(conn);
+        return;
+      }
       long lowestReceived = blocks.get(0).height;
       if (lowestReceived > 1) {
         long stepBack = Math.max(1, lowestReceived - 20);
@@ -384,6 +430,7 @@ public class P2pClientManager {
       return;
     }
 
+    peerStepBackCount.remove(conn);
     for (Block b : blocks) {
       maxPeerHeight = Math.max(maxPeerHeight, b.height);
     }
@@ -437,7 +484,7 @@ public class P2pClientManager {
   private void handleHandshake(PeerConnection conn, NodePacket pkt, boolean isAck) {
     HandshakeMessage msg = pkt.readJson(HandshakeMessage.class);
     long now = System.currentTimeMillis();
-    if (!isValidHandshake(msg, new HandshakeContext(this.nodeId, nodeConfig.chainId, now))) {
+    if (!isValidHandshake(msg, new HandshakeContext(this.nodeId, nodeConfig.chainId, now, this.seenHandshakeNonces))) {
       conn.close();
       return;
     }
@@ -467,14 +514,14 @@ public class P2pClientManager {
 
     Block local = blockchainService.getLatestBlockHeader();
     if (msg.height() > local.height) {
-      long fromHeight = (local.height > 0) ? Math.max(1, local.height - 5) : 1;
+      long fromHeight = (local.height > 0) ? Math.max(1, local.height - 5) : 0;
       GetBlocksRequest req = new GetBlocksRequest(fromHeight, 100);
       NodePacket p = NodePacket.fromJson(OpCode.GET_BLOCKS, 0, req);
       if (p != null) conn.send(p);
     }
   }
 
-  public record HandshakeContext(String localNodeId, String chainId, long now) {}
+  public record HandshakeContext(String localNodeId, String chainId, long now, java.util.Set<String> seenNonces) {}
 
   public record HandshakeMessage(
     String nodeId,
@@ -485,10 +532,11 @@ public class P2pClientManager {
     String version,
     long timestamp,
     String publicKey,
-    String signature
+    String signature,
+    String sessionNonce
   ) implements Serializable {
     public String toSignableData() {
-      return nodeId + "|" + chainId + "|" + height + "|" + latestBlockHash + "|" + p2pPort + "|" + timestamp;
+      return nodeId + "|" + chainId + "|" + height + "|" + latestBlockHash + "|" + p2pPort + "|" + timestamp + "|" + sessionNonce;
     }
   }
 

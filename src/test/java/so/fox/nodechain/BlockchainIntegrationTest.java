@@ -141,7 +141,7 @@ public class BlockchainIntegrationTest {
       .andExpect(jsonPath("$.code").value(400))
       .andExpect(jsonPath("$.message").value("Некорректный формат адреса"));
 
-    KeyPair kp = CryptoUtil.generateRsaKeyPair();
+    KeyPair kp = CryptoUtil.generateKeyPair();
     String unused = CryptoUtil.getAddressFromPublicKey(kp.getPublic());
 
     mockMvc.perform(get("/api/v1/addresses/" + unused))
@@ -155,10 +155,10 @@ public class BlockchainIntegrationTest {
    */
   @Test
   public void testTransactionSendAndMine() throws Exception {
-    KeyPair senderKp = CryptoUtil.generateRsaKeyPair();
+    KeyPair senderKp = CryptoUtil.generateKeyPair();
     String sender = CryptoUtil.getAddressFromPublicKey(senderKp.getPublic());
 
-    KeyPair recipientKp = CryptoUtil.generateRsaKeyPair();
+    KeyPair recipientKp = CryptoUtil.generateKeyPair();
     String recipient = CryptoUtil.getAddressFromPublicKey(recipientKp.getPublic());
 
     Account senderAcc = blockchainService.getAccount(sender);
@@ -180,7 +180,8 @@ public class BlockchainIntegrationTest {
       fee,
       nonce,
       pubKeyB64,
-      sig
+      sig,
+      ""
     );
 
     mockMvc.perform(post("/api/v1/transactions/send")
@@ -265,7 +266,7 @@ public class BlockchainIntegrationTest {
   @SuppressWarnings("null")
   @Test
   public void testChainReorganization() {
-    KeyPair minerKp = CryptoUtil.generateRsaKeyPair();
+    KeyPair minerKp = CryptoUtil.generateKeyPair();
     String altMiner = CryptoUtil.getAddressFromPublicKey(minerKp.getPublic());
 
     Block genesis = blockchainService.getBlockByIdentifier("0").value;
@@ -306,14 +307,14 @@ public class BlockchainIntegrationTest {
     try {
       nodeConfig.maxMempoolSize = 1;
 
-      KeyPair p1 = CryptoUtil.generateRsaKeyPair();
+      KeyPair p1 = CryptoUtil.generateKeyPair();
       String addr1 = CryptoUtil.getAddressFromPublicKey(p1.getPublic());
       Account a1 = blockchainService.getAccount(addr1);
       a1.balance = 10_000L;
       a1.nonce = 0L;
       blockchainService.saveAccount(a1);
 
-      KeyPair p2 = CryptoUtil.generateRsaKeyPair();
+      KeyPair p2 = CryptoUtil.generateKeyPair();
       String addr2 = CryptoUtil.getAddressFromPublicKey(p2.getPublic());
       Account a2 = blockchainService.getAccount(addr2);
       a2.balance = 10_000L;
@@ -362,14 +363,14 @@ public class BlockchainIntegrationTest {
     try {
       nodeConfig.maxMempoolSize = 1;
 
-      KeyPair legitKp = CryptoUtil.generateRsaKeyPair();
+      KeyPair legitKp = CryptoUtil.generateKeyPair();
       String legitAddr = CryptoUtil.getAddressFromPublicKey(legitKp.getPublic());
       Account legitAcc = blockchainService.getAccount(legitAddr);
       legitAcc.balance = 5_000L;
       legitAcc.nonce = 0L;
       blockchainService.saveAccount(legitAcc);
 
-      KeyPair dummyKp = CryptoUtil.generateRsaKeyPair();
+      KeyPair dummyKp = CryptoUtil.generateKeyPair();
       String dummyAddr = CryptoUtil.getAddressFromPublicKey(dummyKp.getPublic());
 
       String legitData = legitAddr + "|" + dummyAddr + "|100|10|0";
@@ -380,7 +381,7 @@ public class BlockchainIntegrationTest {
       var legitRes = blockchainService.submitTransaction(legitTx, false);
       Assertions.assertFalse(legitRes.isError());
 
-      KeyPair attackerKp = CryptoUtil.generateRsaKeyPair();
+      KeyPair attackerKp = CryptoUtil.generateKeyPair();
       String attackerAddr = CryptoUtil.getAddressFromPublicKey(attackerKp.getPublic());
       String attackData = attackerAddr + "|" + dummyAddr + "|100|999999|0";
       String attackSig = CryptoUtil.sign(attackerKp.getPrivate(), attackData);
@@ -406,14 +407,14 @@ public class BlockchainIntegrationTest {
    */
   @Test
   public void testMerkleRootDeterministicOrderIntegrity() {
-    KeyPair p1 = CryptoUtil.generateRsaKeyPair();
+    KeyPair p1 = CryptoUtil.generateKeyPair();
     String addr1 = CryptoUtil.getAddressFromPublicKey(p1.getPublic());
     Account a1 = blockchainService.getAccount(addr1);
     a1.balance = 100_000L;
     a1.nonce = 0L;
     blockchainService.saveAccount(a1);
 
-    KeyPair p2 = CryptoUtil.generateRsaKeyPair();
+    KeyPair p2 = CryptoUtil.generateKeyPair();
     String addr2 = CryptoUtil.getAddressFromPublicKey(p2.getPublic());
 
     String d1 = addr1 + "|" + addr2 + "|10|10|0";
@@ -443,7 +444,7 @@ public class BlockchainIntegrationTest {
    */
   @Test
   public void testPaginationLimitCapped() throws Exception {
-    KeyPair kp = CryptoUtil.generateRsaKeyPair();
+    KeyPair kp = CryptoUtil.generateKeyPair();
     String addr = CryptoUtil.getAddressFromPublicKey(kp.getPublic());
     mockMvc.perform(get("/api/v1/addresses/" + addr + "/transactions?limit=999999"))
       .andExpect(status().isOk())
@@ -456,17 +457,17 @@ public class BlockchainIntegrationTest {
    */
   @Test
   public void testUnconfirmedIncomingBalanceCannotBeSpent() {
-    KeyPair bobKp = CryptoUtil.generateRsaKeyPair();
+    KeyPair bobKp = CryptoUtil.generateKeyPair();
     String bob = CryptoUtil.getAddressFromPublicKey(bobKp.getPublic());
     Account bobAcc = blockchainService.getAccount(bob);
     bobAcc.balance = 2000L;
     bobAcc.nonce = 0L;
     blockchainService.saveAccount(bobAcc);
 
-    KeyPair aliceKp = CryptoUtil.generateRsaKeyPair();
+    KeyPair aliceKp = CryptoUtil.generateKeyPair();
     String alice = CryptoUtil.getAddressFromPublicKey(aliceKp.getPublic());
 
-    KeyPair charlieKp = CryptoUtil.generateRsaKeyPair();
+    KeyPair charlieKp = CryptoUtil.generateKeyPair();
     String charlie = CryptoUtil.getAddressFromPublicKey(charlieKp.getPublic());
 
     // Bob -> Alice (500), pending in mempool
@@ -495,21 +496,21 @@ public class BlockchainIntegrationTest {
    */
   @Test
   public void testMinerFeePrioritizationAcrossAccounts() {
-    KeyPair lowKp = CryptoUtil.generateRsaKeyPair();
+    KeyPair lowKp = CryptoUtil.generateKeyPair();
     String lowAddr = CryptoUtil.getAddressFromPublicKey(lowKp.getPublic());
     Account lowAcc = blockchainService.getAccount(lowAddr);
     lowAcc.balance = 10_000L;
     lowAcc.nonce = 0L;
     blockchainService.saveAccount(lowAcc);
 
-    KeyPair highKp = CryptoUtil.generateRsaKeyPair();
+    KeyPair highKp = CryptoUtil.generateKeyPair();
     String highAddr = CryptoUtil.getAddressFromPublicKey(highKp.getPublic());
     Account highAcc = blockchainService.getAccount(highAddr);
     highAcc.balance = 10_000L;
     highAcc.nonce = 0L;
     blockchainService.saveAccount(highAcc);
 
-    KeyPair destKp = CryptoUtil.generateRsaKeyPair();
+    KeyPair destKp = CryptoUtil.generateKeyPair();
     String destAddr = CryptoUtil.getAddressFromPublicKey(destKp.getPublic());
 
     // Low fee transaction submitted earlier
@@ -543,14 +544,14 @@ public class BlockchainIntegrationTest {
    */
   @Test
   public void testPipelinedConsecutiveNoncesInMempool() {
-    KeyPair kp = CryptoUtil.generateRsaKeyPair();
+    KeyPair kp = CryptoUtil.generateKeyPair();
     String sender = CryptoUtil.getAddressFromPublicKey(kp.getPublic());
     Account acc = blockchainService.getAccount(sender);
     acc.balance = 50_000L;
     acc.nonce = 0L;
     blockchainService.saveAccount(acc);
 
-    KeyPair destKp = CryptoUtil.generateRsaKeyPair();
+    KeyPair destKp = CryptoUtil.generateKeyPair();
     String dest = CryptoUtil.getAddressFromPublicKey(destKp.getPublic());
 
     String d0 = sender + "|" + dest + "|100|10|0";
@@ -578,9 +579,9 @@ public class BlockchainIntegrationTest {
    */
   @Test
   public void testTransactionMalleabilityRejection() {
-    KeyPair kp = CryptoUtil.generateRsaKeyPair();
+    KeyPair kp = CryptoUtil.generateKeyPair();
     String sender = CryptoUtil.getAddressFromPublicKey(kp.getPublic());
-    KeyPair destKp = CryptoUtil.generateRsaKeyPair();
+    KeyPair destKp = CryptoUtil.generateKeyPair();
     String dest = CryptoUtil.getAddressFromPublicKey(destKp.getPublic());
 
     // Честный отправитель подписал транзакцию без комментария
@@ -600,9 +601,9 @@ public class BlockchainIntegrationTest {
    */
   @Test
   public void testLongCommentAndNullHashRejection() {
-    KeyPair kp = CryptoUtil.generateRsaKeyPair();
+    KeyPair kp = CryptoUtil.generateKeyPair();
     String sender = CryptoUtil.getAddressFromPublicKey(kp.getPublic());
-    KeyPair destKp = CryptoUtil.generateRsaKeyPair();
+    KeyPair destKp = CryptoUtil.generateKeyPair();
     String dest = CryptoUtil.getAddressFromPublicKey(destKp.getPublic());
 
     String longComment = "a".repeat(257);
@@ -626,7 +627,7 @@ public class BlockchainIntegrationTest {
    */
   @Test
   public void testUppercaseAddressTransactionsQuery() {
-    KeyPair kp = CryptoUtil.generateRsaKeyPair();
+    KeyPair kp = CryptoUtil.generateKeyPair();
     String addr = CryptoUtil.getAddressFromPublicKey(kp.getPublic());
 
     var res = blockchainService.getAddressTransactions(addr.toUpperCase(), 10, 0);
@@ -642,11 +643,11 @@ public class BlockchainIntegrationTest {
   @Test
   public void testBlockInvalidTxCountOrMinerAddressRejection() {
     Block latest = blockchainService.getLatestBlockHeader();
-    Block b = new Block(new Block.Draft(latest.height + 1, latest.hash, "invalid_miner_addr"), Collections.emptyList());
+    Block b = new Block(latest.height + 1, latest.hash, "invalid_miner_addr", Collections.emptyList());
     b.mineBlock(2);
     Assertions.assertFalse(blockchainService.applyIncomingBlock(b), "Block with invalid minerAddress must be rejected");
 
-    Block b2 = new Block(new Block.Draft(latest.height + 1, latest.hash, latest.minerAddress), Collections.emptyList());
+    Block b2 = new Block(latest.height + 1, latest.hash, latest.minerAddress, Collections.emptyList());
     b2.txCount = 999;
     b2.mineBlock(2);
     Assertions.assertFalse(blockchainService.applyIncomingBlock(b2), "Block with mismatched txCount must be rejected");

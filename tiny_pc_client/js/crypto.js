@@ -1,6 +1,6 @@
 /**
  * Криптографический модуль клиента NodeChain (Static-First).
- * Использует нативный Web Crypto API браузера (RSA-2048, SHA256withRSA, Fox-адреса).
+ * Использует нативный Web Crypto API браузера (Ed25519, SHA-256, Fox-адреса).
  */
 const CryptoUtil = {
 
@@ -34,17 +34,12 @@ const CryptoUtil = {
   },
 
   /**
-   * Генерирует новую пару RSA ключей длиной 2048 бит.
+   * Генерирует новую пару ключей Ed25519.
    */
   async generateKeyPair() {
     try {
       const kp = await window.crypto.subtle.generateKey(
-        {
-          name: 'RSASSA-PKCS1-v1_5',
-          modulusLength: 2048,
-          publicExponent: new Uint8Array([1, 0, 1]),
-          hash: 'SHA-256'
-        },
+        { name: 'Ed25519' },
         true,
         ['sign', 'verify']
       );
@@ -100,7 +95,7 @@ const CryptoUtil = {
       return await window.crypto.subtle.importKey(
         'spki',
         buf,
-        { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
+        { name: 'Ed25519' },
         true,
         ['verify']
       );
@@ -119,7 +114,7 @@ const CryptoUtil = {
       return await window.crypto.subtle.importKey(
         'pkcs8',
         buf,
-        { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
+        { name: 'Ed25519' },
         true,
         ['sign']
       );
@@ -129,28 +124,30 @@ const CryptoUtil = {
   },
 
   /**
-   * Восстанавливает открытый ключ из закрытого ключа (через генерацию пары или экспорт).
-   * Примечание: в WebCrypto из PKCS#8 напрямую SPKI не всегда экспортируется,
-   * поэтому кошелек может хранить обе части ключа либо вычислять из файла кошелька.
+   * Восстанавливает и валидирует пару ключей Ed25519.
+   * Возвращает null, если не удалось импортировать privateKey или publicKey.
    */
-  async loadWalletFromData(privB64, pubB64) {
+  async loadWalletFromData(privB64, pubB64, addr = '') {
     if (!privB64) return null;
     const privKey = await this.importPrivateKey(privB64);
     if (!privKey) return null;
 
     let pubKey = null;
-    let address = null;
+    let address = addr || '';
     if (pubB64) {
       pubKey = await this.importPublicKey(pubB64);
-      if (pubKey) address = await this.getAddressFromPublicKey(pubKey);
+      if (pubKey && !address) {
+        address = await this.getAddressFromPublicKey(pubKey);
+      }
     }
+    if (!pubKey || !address) return null;
 
     return {
       privateKey: privKey,
       publicKey: pubKey,
       privateKeyBase64: privB64,
-      publicKeyBase64: pubB64 || '',
-      address: address || ''
+      publicKeyBase64: pubB64,
+      address: address
     };
   },
 
@@ -212,14 +209,14 @@ const CryptoUtil = {
   },
 
   /**
-   * Создает цифровую подпись канонической строки алгоритмом SHA256withRSA.
+   * Создает цифровую подпись канонической строки алгоритмом Ed25519.
    */
   async sign(privKey, canonicalString) {
     if (!privKey || !canonicalString) return null;
     try {
       const dataBytes = new TextEncoder().encode(canonicalString);
       const sigBuf = await window.crypto.subtle.sign(
-        'RSASSA-PKCS1-v1_5',
+        { name: 'Ed25519' },
         privKey,
         dataBytes
       );
@@ -228,18 +225,6 @@ const CryptoUtil = {
       console.error('Ошибка создания подписи:', err);
       return null;
     }
-  },
-
-  /**
-   * Вычисляет SHA-256 хеш строки (UTF-8) в виде hex-строки.
-   */
-  async sha256Hex(text) {
-    if (!text) return '';
-    const bytes = new TextEncoder().encode(text);
-    const hash = await window.crypto.subtle.digest('SHA-256', bytes);
-    return Array.from(new Uint8Array(hash))
-      .map(b => b.toString(16).padStart(2, '0'))
-      .join('');
   }
 };
 

@@ -38,6 +38,8 @@ import so.fox.nodechain.repository.TransactionRepository;
 @Service
 public class BlockchainService {
 
+  public static final int MAX_REORG_DEPTH = 100;
+
   private static final Logger log = LoggerFactory.getLogger(BlockchainService.class);
 
   private static final Comparator<Transaction> TX_ORDER = Comparator
@@ -123,7 +125,7 @@ public class BlockchainService {
   public Block getLatestBlockHeader() {
     Block cached = cachedLatestBlock.get();
     if (cached != null) return cached;
-    Block latest = blockRepository.findLatestBlock().orElseGet(Block::createGenesis);
+    Block latest = blockRepository.findLatestBlock().orElseGet(() -> Block.createGenesis(resolveGenesisAddress()));
     cachedLatestBlock.set(latest);
     return latest;
   }
@@ -235,7 +237,7 @@ public class BlockchainService {
         minerAddr = nodeWalletService.address;
       }
 
-      Block newBlock = new Block(new Block.Draft(latest.height + 1, latest.hash, minerAddr), validTxs);
+      Block newBlock = new Block(latest.height + 1, latest.hash, minerAddr, validTxs);
       boolean isMined = newBlock.mineBlock(nodeConfig.difficulty);
       if (!isMined) {
         log.warn("Mining interrupted or aborted for block #{}", newBlock.height);
@@ -280,6 +282,11 @@ public class BlockchainService {
       if (ancestorOpt.isEmpty()) return false;
       Block ancestor = ancestorOpt.get();
       Block currentLatest = getLatestBlockHeader();
+      long depth = currentLatest.height - ancestor.height;
+      if (depth > MAX_REORG_DEPTH || depth < 0) {
+        log.warn("Reorganization rejected: depth {} exceeds limit {}", depth, MAX_REORG_DEPTH);
+        return false;
+      }
       Block newLatest = branch.get(branch.size() - 1);
       List<Block> rollback = collectRollbackBlocks(currentLatest.height, ancestor.height);
       BigInteger curWork = ConsensusUtil.calculateChainWork(rollback, nodeConfig.difficulty);
@@ -390,21 +397,59 @@ public class BlockchainService {
     }
   }
 
+  // Принимает генезис-блок удаленного пира при первой синхронизации чистой ноды
+  public boolean adoptPeerGenesisBlock(Block remoteGenesis) {
+    if (remoteGenesis == null || !CryptoUtil.isValidAddress(remoteGenesis.minerAddress)) return false;
+    Block expected = Block.createGenesis(remoteGenesis.minerAddress);
+    if (!expected.hash.equals(remoteGenesis.hash) || remoteGenesis.txCount != 0
+        || (remoteGenesis.transactions != null && !remoteGenesis.transactions.isEmpty())) return false;
+    synchronized (chainLock) {
+      Block current = getLatestBlockHeader();
+      if (current.height > 0 || !mempool.isEmpty()) return false;
+      if (current.hash.equals(remoteGenesis.hash)) return true;
+      if (nodeConfig.genesisAddress != null && !nodeConfig.genesisAddress.isBlank()) return false;
+
+      log.info("Adopting peer genesis block #0: hash={}, miner={}", remoteGenesis.hash, remoteGenesis.minerAddress);
+      txTemplate.execute(status -> {
+        blockRepository.deleteBlocksGreaterThan(-1);
+        blockRepository.save(remoteGenesis);
+        if (nodeConfig.genesisAllocation > 0) {
+          String oldLocalAddr = resolveGenesisAddress();
+          if (!oldLocalAddr.isEmpty() && !oldLocalAddr.equalsIgnoreCase(remoteGenesis.minerAddress)) {
+            accountRepository.findByAddress(oldLocalAddr).ifPresent(oldAcc -> {
+              accountRepository.saveOrUpdate(new Account(oldLocalAddr, 0, 0));
+            });
+          }
+          Account genesisAcc = new Account(remoteGenesis.minerAddress.toLowerCase(), nodeConfig.genesisAllocation, 0);
+          accountRepository.saveOrUpdate(genesisAcc);
+        }
+        return true;
+      });
+      cachedLatestBlock.set(remoteGenesis);
+      return true;
+    }
+  }
+
+  private String resolveGenesisAddress() {
+    if (nodeConfig.genesisAddress != null && !nodeConfig.genesisAddress.isBlank()) {
+      return nodeConfig.genesisAddress.trim().toLowerCase();
+    }
+    return (nodeWalletService != null && nodeWalletService.address != null)
+      ? nodeWalletService.address.toLowerCase() : "";
+  }
+
   private void createGenesisBlock() {
-    Block genesis = Block.createGenesis();
+    String minerAddr = resolveGenesisAddress();
+    Block genesis = Block.createGenesis(minerAddr);
     blockRepository.save(genesis);
     cachedLatestBlock.set(genesis);
-    log.info("Deterministic genesis block initialized: {}", genesis.hash);
+    log.info("Genesis block initialized: {} (miner: {})", genesis.hash, genesis.minerAddress);
     allocateGenesisFundsIfEmpty();
   }
 
   private void allocateGenesisFundsIfEmpty() {
     if (nodeConfig.genesisAllocation <= 0) return;
-
-    String targetAddr = (nodeConfig.genesisAddress != null && !nodeConfig.genesisAddress.isBlank())
-      ? nodeConfig.genesisAddress.trim().toLowerCase()
-      : (nodeWalletService != null && nodeWalletService.address != null ? nodeWalletService.address.toLowerCase() : "");
-
+    String targetAddr = resolveGenesisAddress();
     if (targetAddr.isEmpty() || !CryptoUtil.isValidAddress(targetAddr)) return;
     Optional<Account> existing = accountRepository.findByAddress(targetAddr);
     if (existing.isPresent()) return;
@@ -473,15 +518,10 @@ public class BlockchainService {
     return blockHeight != null && (ancestorHeight == null || blockHeight <= ancestorHeight);
   }
 
-  // Вычисляет вознаграждение майнера за блок с учетом алгоритма халвинга
-  public long getBlockSubsidy(long height) {
-    return ConsensusUtil.calculateBlockSubsidy(height, nodeConfig.miningReward, nodeConfig.halvingInterval);
-  }
-
   private boolean applyMinerReward(Block b, long totalFees, boolean isRollback, Map<String, Account> state) {
     if (b.minerAddress == null || b.minerAddress.isEmpty()) return true;
     try {
-      long subsidy = getBlockSubsidy(b.height);
+      long subsidy = ConsensusUtil.calculateBlockSubsidy(b.height, nodeConfig.miningReward, nodeConfig.halvingInterval);
       long reward = Math.addExact(subsidy, totalFees);
       String minerNorm = b.minerAddress.toLowerCase();
       Account miner = state.computeIfAbsent(minerNorm, this::getAccount);

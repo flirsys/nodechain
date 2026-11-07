@@ -30,8 +30,6 @@ import so.fox.nodechain.model.Block;
 import so.fox.nodechain.model.PeerInfo;
 import so.fox.nodechain.model.Transaction;
 import so.fox.nodechain.p2p.P2pClientManager;
-import so.fox.nodechain.p2p.packet.NodePacket;
-import so.fox.nodechain.p2p.packet.OpCode;
 import so.fox.nodechain.repository.AccountRepository;
 import so.fox.nodechain.repository.BlockRepository;
 import so.fox.nodechain.repository.PeerRepository;
@@ -58,7 +56,7 @@ public class MultiNodeNetworkTest {
 
   @BeforeAll
   public static void setUpSharedGenesis() {
-    sharedGenesisKey = CryptoUtil.generateRsaKeyPair();
+    sharedGenesisKey = CryptoUtil.generateKeyPair();
     sharedGenesisAddr = CryptoUtil.getAddressFromPublicKey(sharedGenesisKey.getPublic());
   }
 
@@ -102,7 +100,7 @@ public class MultiNodeNetworkTest {
     waitForPeers(nodeA.p2p, 1, 3000);
     waitForPeers(nodeB.p2p, 1, 3000);
 
-    KeyPair recipient = CryptoUtil.generateRsaKeyPair();
+    KeyPair recipient = CryptoUtil.generateKeyPair();
     String recipientAddr = CryptoUtil.getAddressFromPublicKey(recipient.getPublic());
 
     Transaction tx = createSignedTransaction(
@@ -138,7 +136,7 @@ public class MultiNodeNetworkTest {
     waitForPeers(nodeA.p2p, 1, 3000);
     waitForPeers(nodeB.p2p, 1, 3000);
 
-    KeyPair recipient = CryptoUtil.generateRsaKeyPair();
+    KeyPair recipient = CryptoUtil.generateKeyPair();
     String recipientAddr = CryptoUtil.getAddressFromPublicKey(recipient.getPublic());
     Transaction tx = createSignedTransaction(sharedGenesisKey, recipientAddr, 2500L, 50L, 0L, "Payment for services");
 
@@ -252,11 +250,10 @@ public class MultiNodeNetworkTest {
 
     // Формируем фальшивый блок: неверный Proof of Work (начинается с "f", а не с нулей "00")
     Block latest = nodeHonest1.blockchain.getLatestBlockHeader();
-    Block fakeBlock = new Block(new Block.Draft(latest.height + 1, latest.hash, "f5ox000000000000000000000000000000000000000000000000000000000000"), Collections.emptyList());
+    Block fakeBlock = new Block(latest.height + 1, latest.hash, "f5ox000000000000000000000000000000000000000000000000000000000000", Collections.emptyList());
     fakeBlock.hash = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
 
     // Отправляем фальшивый блок на Node 1
-    NodePacket.fromJson(OpCode.NEW_BLOCK_ANNOUNCE, 0, fakeBlock);
     boolean isApplied = nodeHonest1.blockchain.applyIncomingBlock(fakeBlock);
     Assertions.assertFalse(isApplied, "Честная нода обязана отклонить блок с невалидным PoW");
 
@@ -282,7 +279,7 @@ public class MultiNodeNetworkTest {
     waitForPeers(nodeC.p2p, 1, 3000);
 
     // 1. Проверяем ретрансляцию транзакции: отправляем на A, дойти должна до C через B
-    KeyPair recipient = CryptoUtil.generateRsaKeyPair();
+    KeyPair recipient = CryptoUtil.generateKeyPair();
     String recipientAddr = CryptoUtil.getAddressFromPublicKey(recipient.getPublic());
     Transaction tx = createSignedTransaction(sharedGenesisKey, recipientAddr, 300L, 50L, 0L, "Relay through B");
 

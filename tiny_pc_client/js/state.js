@@ -177,7 +177,7 @@ const AppState = {
   },
 
   /**
-   * Создает новый RSA-кошелек и делает его активным.
+   * Создает новый Ed25519-кошелек и делает его активным.
    */
   async createNewWallet(label = 'Кошелек') {
     const kp = await CryptoUtil.generateKeyPair();
@@ -204,37 +204,43 @@ const AppState = {
   },
 
   /**
-   * Импортирует кошелек по строке приватного ключа PKCS#8 Base64.
+   * Импортирует кошелек по строке приватного ключа PKCS#8 Base64 или nodewallet.dat.
    */
   async importWallet(privB64, pubB64 = '', label = 'Импортированный') {
     if (!privB64) {
-      this.notify('Укажите приватный ключ', 'error');
+      this.notify('Укажите ключи кошелька', 'error');
       return null;
     }
-    const cleanPriv = privB64.trim();
-    const cleanPub = pubB64.trim();
+    let cleanPriv = privB64.trim();
+    let cleanPub = (pubB64 || '').trim();
+    let addr = '';
 
-    const privKey = await CryptoUtil.importPrivateKey(cleanPriv);
-    if (!privKey) {
-      this.notify('Некорректный закрытый ключ PKCS#8 Base64', 'error');
+    const lines = cleanPriv.split('\n').map(l => l.trim()).filter(Boolean);
+    if (lines.length >= 2) {
+      cleanPriv = lines[0];
+      cleanPub = lines[1];
+      if (lines.length >= 3) addr = lines[2];
+    }
+
+    if (!cleanPriv || !cleanPub) {
+      this.notify('Требуются оба ключа (приватный PKCS#8 и открытый X.509) или 3 строки nodewallet.dat', 'error');
       return null;
     }
 
-    let pubKey = null;
-    let address = '';
-    if (cleanPub) {
-      pubKey = await CryptoUtil.importPublicKey(cleanPub);
-      if (pubKey) address = await CryptoUtil.getAddressFromPublicKey(pubKey);
+    const imported = await CryptoUtil.loadWalletFromData(cleanPriv, cleanPub, addr);
+    if (!imported) {
+      this.notify('Некорректные ключи Ed25519 (проверьте PKCS#8 и X.509 Base64)', 'error');
+      return null;
     }
 
     const wallet = {
       id: 'w_' + Date.now(),
       label: label,
-      address: address,
-      publicKeyBase64: cleanPub,
-      privateKeyBase64: cleanPriv,
-      cryptoPrivKey: privKey,
-      cryptoPubKey: pubKey
+      address: imported.address,
+      publicKeyBase64: imported.publicKeyBase64,
+      privateKeyBase64: imported.privateKeyBase64,
+      cryptoPrivKey: imported.privateKey,
+      cryptoPubKey: imported.publicKey
     };
 
     this.wallets.push(wallet);
@@ -252,15 +258,13 @@ const AppState = {
     this.activeWallet = wallet;
     localStorage.setItem(this.STORAGE_KEY_ACTIVE, wallet.id);
 
-    // Восстанавливаем CryptoKey объекты если они отсутствуют
-    if (!wallet.cryptoPrivKey && wallet.privateKeyBase64) {
-      wallet.cryptoPrivKey = await CryptoUtil.importPrivateKey(wallet.privateKeyBase64);
-    }
-    if (!wallet.cryptoPubKey && wallet.publicKeyBase64) {
-      wallet.cryptoPubKey = await CryptoUtil.importPublicKey(wallet.publicKeyBase64);
-    }
-    if (!wallet.address && wallet.cryptoPubKey) {
-      wallet.address = await CryptoUtil.getAddressFromPublicKey(wallet.cryptoPubKey);
+    if ((!wallet.cryptoPrivKey || !wallet.cryptoPubKey) && wallet.privateKeyBase64 && wallet.publicKeyBase64) {
+      const restored = await CryptoUtil.loadWalletFromData(wallet.privateKeyBase64, wallet.publicKeyBase64, wallet.address);
+      if (restored) {
+        wallet.cryptoPrivKey = restored.privateKey;
+        wallet.cryptoPubKey = restored.publicKey;
+        wallet.address = restored.address;
+      }
     }
 
     await this.refreshAccount();
@@ -404,22 +408,18 @@ const AppState = {
       const raw = localStorage.getItem(this.STORAGE_KEY_DEV_WALLET);
       if (!raw) return;
       const parsed = JSON.parse(raw);
-      if (parsed.privateKeyBase64) {
-        const priv = await CryptoUtil.importPrivateKey(parsed.privateKeyBase64);
-        let pub = null;
-        let addr = parsed.address;
-        if (parsed.publicKeyBase64) {
-          pub = await CryptoUtil.importPublicKey(parsed.publicKeyBase64);
-          if (!addr && pub) addr = await CryptoUtil.getAddressFromPublicKey(pub);
+      if (parsed.privateKeyBase64 && parsed.publicKeyBase64) {
+        const imported = await CryptoUtil.loadWalletFromData(parsed.privateKeyBase64, parsed.publicKeyBase64, parsed.address);
+        if (imported) {
+          this.dev.minerWallet = {
+            address: imported.address,
+            privateKeyBase64: imported.privateKeyBase64,
+            publicKeyBase64: imported.publicKeyBase64,
+            cryptoPrivKey: imported.privateKey,
+            cryptoPubKey: imported.publicKey
+          };
+          this.refreshMinerAccount();
         }
-        this.dev.minerWallet = {
-          address: addr,
-          privateKeyBase64: parsed.privateKeyBase64,
-          publicKeyBase64: parsed.publicKeyBase64,
-          cryptoPrivKey: priv,
-          cryptoPubKey: pub
-        };
-        this.refreshMinerAccount();
       }
     } catch (ignored) {}
   },

@@ -58,12 +58,10 @@ public class NodePacket {
 
   // Сериализует объект в JSON и упаковывает в сетевой пакет с проверкой размера
   public static NodePacket fromJson(byte opCode, int requestId, Object data) {
-    if (data == null)
-      return new NodePacket(opCode, requestId, new byte[0]);
+    if (data == null) return new NodePacket(opCode, requestId, new byte[0]);
     try {
       byte[] json = MAPPER.writeValueAsBytes(data);
-      if (json.length > MAX_PAYLOAD_SIZE)
-        return null;
+      if (json.length > MAX_PAYLOAD_SIZE) return null;
       return new NodePacket(opCode, requestId, json);
     } catch (Exception err) {
       return null;
@@ -72,8 +70,7 @@ public class NodePacket {
 
   // Десериализует JSON payload пакета в указанный класс
   public <T> T readJson(Class<T> clazz) {
-    if (payload == null || payload.length == 0 || clazz == null)
-      return null;
+    if (payload == null || payload.length == 0 || clazz == null) return null;
     try {
       return MAPPER.readValue(payload, clazz);
     } catch (Exception err) {
@@ -92,8 +89,7 @@ public class NodePacket {
     dos.writeInt(requestId);
     dos.writeByte(opCode);
     dos.writeInt(cachedWirePayload.length);
-    if (cachedWirePayload.length > 0)
-      dos.write(cachedWirePayload);
+    if (cachedWirePayload.length > 0) dos.write(cachedWirePayload);
     dos.flush();
   }
 

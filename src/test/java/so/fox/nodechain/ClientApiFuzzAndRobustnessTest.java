@@ -159,7 +159,7 @@ public class ClientApiFuzzAndRobustnessTest {
       .andExpect(jsonPath("$.balance").isNumber());
 
     // 2. Валидный по формату адрес, но еще не зарегистрированный в сети -> 404
-    KeyPair kp = CryptoUtil.generateRsaKeyPair();
+    KeyPair kp = CryptoUtil.generateKeyPair();
     String freshAddr = CryptoUtil.getAddressFromPublicKey(kp.getPublic());
     mockMvc.perform(get("/api/v1/addresses/" + freshAddr))
       .andExpect(status().isNotFound())
@@ -480,11 +480,11 @@ public class ClientApiFuzzAndRobustnessTest {
   @Test
   @DisplayName("Send: нелогичные суммы (<=0), отрицательные комиссии, самоотправка и оверспенд")
   public void testSendTransactionIllogicalValues() throws Exception {
-    KeyPair senderKp = CryptoUtil.generateRsaKeyPair();
+    KeyPair senderKp = CryptoUtil.generateKeyPair();
     String senderAddr = CryptoUtil.getAddressFromPublicKey(senderKp.getPublic());
     String senderPubB64 = CryptoUtil.encodePublicKey(senderKp.getPublic());
 
-    KeyPair recipientKp = CryptoUtil.generateRsaKeyPair();
+    KeyPair recipientKp = CryptoUtil.generateKeyPair();
     String recipientAddr = CryptoUtil.getAddressFromPublicKey(recipientKp.getPublic());
 
     // 1. Нулевая сумма перевода (amount = 0) -> 409
@@ -552,11 +552,11 @@ public class ClientApiFuzzAndRobustnessTest {
     String nodeAddr = nodeWalletService.address;
     String nodePubB64 = CryptoUtil.encodePublicKey(nodeWalletService.publicKey);
 
-    KeyPair recipientKp = CryptoUtil.generateRsaKeyPair();
+    KeyPair recipientKp = CryptoUtil.generateKeyPair();
     String recipientAddr = CryptoUtil.getAddressFromPublicKey(recipientKp.getPublic());
 
     // 1. Поддельная цифровая подпись (чужой приватный ключ) -> 400 Bad Request
-    KeyPair hackerKp = CryptoUtil.generateRsaKeyPair();
+    KeyPair hackerKp = CryptoUtil.generateKeyPair();
     String fakeCanonical = nodeAddr + "|" + recipientAddr + "|1000|50|0";
     String fakeSig = CryptoUtil.sign(hackerKp.getPrivate(), fakeCanonical);
     mockMvc.perform(post("/api/v1/transactions/send")
@@ -716,7 +716,7 @@ public class ClientApiFuzzAndRobustnessTest {
     }
 
     // 2.2. Опасные значения полей в JSON (XSS, SQLi, NUL-байты, суррогаты)
-    KeyPair attackerKeys = CryptoUtil.generateRsaKeyPair();
+    KeyPair attackerKeys = CryptoUtil.generateKeyPair();
     String attackerPub = CryptoUtil.encodePublicKey(attackerKeys.getPublic());
     String attackerAddr = CryptoUtil.getAddressFromPublicKey(attackerKeys.getPublic());
 

@@ -67,19 +67,16 @@ public class NodeWalletService {
   }
 
   private static void validateKeyPairAndAddress(PrivateKey priv, PublicKey pub, String addr, Path path) {
-    if (priv == null || pub == null || !CryptoUtil.isValidAddress(addr))
-      throw new IllegalStateException("Некорректные данные кошелька: " + path.toAbsolutePath());
+    if (priv == null || pub == null || !CryptoUtil.isValidAddress(addr)) throw new IllegalStateException("Некорректные данные кошелька: " + path.toAbsolutePath());
     String derived = CryptoUtil.getAddressFromPublicKey(pub);
-    if (!addr.equalsIgnoreCase(derived))
-      throw new IllegalStateException("Адрес не соответствует открытому ключу кошелька: " + path.toAbsolutePath());
+    if (!addr.equalsIgnoreCase(derived)) throw new IllegalStateException("Адрес не соответствует открытому ключу кошелька: " + path.toAbsolutePath());
     String testPayload = "challenge-" + path.getFileName();
     String sig = CryptoUtil.sign(priv, testPayload);
-    if (sig == null || !CryptoUtil.isSignatureValid(pub, testPayload, sig))
-      throw new IllegalStateException("Приватный ключ не соответствует открытому ключу: " + path.toAbsolutePath());
+    if (sig == null || !CryptoUtil.isSignatureValid(pub, testPayload, sig)) throw new IllegalStateException("Приватный ключ не соответствует открытому ключу: " + path.toAbsolutePath());
   }
 
   private void generateAndSaveWallet(Path path) {
-    KeyPair kp = CryptoUtil.generateRsaKeyPair();
+    KeyPair kp = CryptoUtil.generateKeyPair();
     if (kp == null) return;
     this.publicKey = kp.getPublic();
     this.privateKey = kp.getPrivate();

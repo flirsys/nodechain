@@ -263,7 +263,7 @@ const WalletView = {
         m('.card', [
           m('.card-title', [
             m('span', '💸 Отправить транзакцию'),
-            m('span.badge.badge-green', 'RSA-2048 Signed')
+            m('span.badge.badge-green', 'Ed25519 Signed')
           ]),
 
           m('.form-group', [
@@ -334,7 +334,7 @@ const WalletView = {
             style: { width: '100%', marginTop: '6px' },
             disabled: f.isSending,
             onclick: WalletView.handleSend
-          }, f.isSending ? 'Подписание и отправка...' : '🔐 Подписать RSA и отправить в сеть')
+          }, f.isSending ? 'Подписание и отправка...' : '🔐 Подписать Ed25519 и отправить в сеть')
         ]),
 
         // Карточка параметров безопасности кошелька
@@ -403,7 +403,7 @@ const WalletView = {
             ]),
             m('tbody', [
               AppState.history.items.length === 0
-                ? m('tr', [m('td', { colspan: 9, style: { textAlign: 'center', padding: '24px', color: 'var(--text-muted)' } }, 'Транзакций пока нет')])
+                ? m('tr', [m('td', { colspan: 8, style: { textAlign: 'center', padding: '24px', color: 'var(--text-muted)' } }, 'Транзакций пока нет')])
                 : AppState.history.items.map(tx => {
                   const isOutgoing = (tx.from || '').toLowerCase() === (w.address || '').toLowerCase();
                   const statusClass = tx.status === 'confirmed' ? 'badge-green' : (tx.status === 'pending' ? 'badge-yellow' : 'badge-red');
@@ -864,19 +864,19 @@ const DevView = {
               const pub = lines.length > 1 ? lines[1] : '';
               const addr = lines.length > 2 ? lines[2] : '';
 
-              const imported = await CryptoUtil.loadWalletFromData(priv, pub);
-              if (!imported || !imported.privateKey) {
-                AppState.notify('Не удалось расшифровать ключ nodewallet.dat', 'error');
+              const imported = await CryptoUtil.loadWalletFromData(priv, pub, addr);
+              if (!imported) {
+                AppState.notify('Не удалось расшифровать ключи nodewallet.dat (нужны приватный и открытый ключи)', 'error');
                 return;
               }
               dev.minerWallet = {
-                address: addr || imported.address,
-                privateKeyBase64: priv,
-                publicKeyBase64: pub,
+                address: imported.address,
+                privateKeyBase64: imported.privateKeyBase64,
+                publicKeyBase64: imported.publicKeyBase64,
                 cryptoPrivKey: imported.privateKey,
                 cryptoPubKey: imported.publicKey
               };
-              AppState.saveDevWallet(priv, pub, dev.minerWallet.address);
+              AppState.saveDevWallet(imported.privateKeyBase64, imported.publicKeyBase64, imported.address);
               AppState.refreshMinerAccount();
               AppState.notify('Кошелек майнера подключен к крану!', 'success');
               m.redraw();
@@ -1026,16 +1026,16 @@ const ModalComponent = {
               })
             ]),
             m('.form-group', [
-              m('label.form-label', 'Закрытый ключ (PKCS#8 Base64 строка):'),
+              m('label.form-label', 'Закрытый ключ (PKCS#8 Base64) или все 3 строки nodewallet.dat:'),
               m('textarea.form-control.mono', {
                 rows: 4,
-                placeholder: 'Вставьте PKCS#8 ключ...',
+                placeholder: 'Вставьте PKCS#8 ключ или все 3 строки из nodewallet.dat...',
                 value: ModalState.data.priv,
                 oninput: (e) => { ModalState.data.priv = e.target.value; }
               })
             ]),
             m('.form-group', [
-              m('label.form-label', 'Открытый ключ (X.509 Base64, опционально):'),
+              m('label.form-label', 'Открытый ключ (X.509 Base64, обязателен если не вставлен nodewallet.dat):'),
               m('textarea.form-control.mono', {
                 rows: 3,
                 placeholder: 'Вставьте X.509 ключ...',

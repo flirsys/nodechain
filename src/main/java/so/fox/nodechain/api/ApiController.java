@@ -23,7 +23,7 @@ import so.fox.nodechain.p2p.P2pClientManager;
 
 // REST API контроллер публичных запросов ноды блокчейна
 @RestController
-@CrossOrigin(origins = { "http://localhost", "http://127.0.0.1", "http://localhost:8080", "http://127.0.0.1:8080" })
+@CrossOrigin(originPatterns = { "http://localhost:*", "http://127.0.0.1:*", "http://localhost", "http://127.0.0.1", "null" })
 @RequestMapping("/api/v1")
 public class ApiController {
 
@@ -31,11 +31,7 @@ public class ApiController {
   public record FeeResponse(long fee, String priority) implements Serializable {}
   public record MempoolResponse(int count, List<Transaction> transactions) implements Serializable {}
   public record AddressTransactionsResponse(long total, List<TxResponse> txs) implements Serializable {}
-  public record SendTxRequest(String from, String to, Long amount, Long fee, Long nonce, String publicKey, String signature, String comment) implements Serializable {
-    public SendTxRequest(String from, String to, Long amount, Long fee, Long nonce, String publicKey, String signature) {
-      this(from, to, amount, fee, nonce, publicKey, signature, null);
-    }
-  }
+  public record SendTxRequest(String from, String to, Long amount, Long fee, Long nonce, String publicKey, String signature, String comment) implements Serializable {}
   public record SendTxResponse(String hash, String status, long addedAt, long nonce, long fee) implements Serializable {}
   @JsonInclude(JsonInclude.Include.NON_NULL)
   public record TxResponse(String hash, String from, String to, long amount, long fee, String comment, long timestamp, String status, Long blockHeight, String blockHash, Long confirmations) implements Serializable {}
@@ -46,6 +42,7 @@ public class ApiController {
   private final BlockchainService blockchainService;
   private final NodeConfig nodeConfig;
   private final P2pClientManager p2pClientManager;
+  private final java.util.Map<String, Long> lastRestTxTime = new java.util.concurrent.ConcurrentHashMap<>();
 
   public ApiController(BlockchainService blockchainService, NodeConfig nodeConfig, P2pClientManager p2pClientManager) {
     this.blockchainService = blockchainService;
@@ -103,7 +100,22 @@ public class ApiController {
 
   // Отправка новой подписанной транзакции в сеть
   @PostMapping("/transactions/send")
-  public ResponseEntity<?> sendTransaction(@RequestBody(required = false) SendTxRequest req) {
+  public ResponseEntity<?> sendTransaction(
+    @RequestBody(required = false) SendTxRequest req,
+    jakarta.servlet.http.HttpServletRequest httpReq
+  ) {
+    if (httpReq != null) {
+      String ip = httpReq.getRemoteAddr();
+      if (!P2pClientManager.isLocalAddress(ip)) {
+        long now = System.currentTimeMillis();
+        if (lastRestTxTime.size() > 1000) lastRestTxTime.entrySet().removeIf(e -> (now - e.getValue()) > 60_000L);
+        Long last = lastRestTxTime.get(ip);
+        if (last != null && (now - last) < 50L) {
+          return ResponseEntity.status(429).body(new ErrorResponse(429, "Слишком много запросов (Rate limit)"));
+        }
+        lastRestTxTime.put(ip, now);
+      }
+    }
     if (req == null || req.from() == null || req.to() == null || req.amount() == null
         || req.nonce() == null || req.publicKey() == null || req.signature() == null) {
       return ResponseEntity.status(409).body(new ErrorResponse(409, "Транзакция отклонена"));
@@ -169,8 +181,7 @@ public class ApiController {
   }
 
   private static Long calculateConfirmations(String status, Long blockHeight, long curHeight) {
-    if ("confirmed".equalsIgnoreCase(status) && blockHeight != null)
-      return Math.max(1, curHeight - blockHeight + 1);
+    if ("confirmed".equalsIgnoreCase(status) && blockHeight != null) return Math.max(1, curHeight - blockHeight + 1);
     return 0L;
   }
 

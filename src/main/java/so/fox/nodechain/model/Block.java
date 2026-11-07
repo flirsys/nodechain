@@ -29,15 +29,9 @@ public class Block implements Serializable {
   @JsonSetter(nulls = Nulls.AS_EMPTY)
   public List<Transaction> transactions = new ArrayList<>();
 
-  public record Draft(long height, String previousHash, String minerAddress) {}
   public record Meta(long height, String hash, String previousHash, String merkleRoot, String minerAddress, int txCount, long timestamp, long nonce) {}
 
   public Block() {}
-
-  // Конструктор создания блока через компактный контекст Draft
-  public Block(Draft draft, List<Transaction> txs) {
-    this(draft.height(), draft.previousHash(), draft.minerAddress(), txs);
-  }
 
   // Конструктор нового блока перед началом майнинга
   public Block(long height, String previousHash, String minerAddress, List<Transaction> txs) {
@@ -65,12 +59,12 @@ public class Block implements Serializable {
     this.transactions = new ArrayList<>();
   }
 
-  // Создает детерминированный Genesis-блок #0
-  public static Block createGenesis() {
+  // Создает Genesis-блок #0 с указанным адресом майнера премайна
+  public static Block createGenesis(String minerAddress) {
     Block genesis = new Block();
     genesis.height = 0;
     genesis.previousHash = "0";
-    genesis.minerAddress = "GENESIS";
+    genesis.minerAddress = (minerAddress != null && !minerAddress.isBlank()) ? minerAddress : "GENESIS";
     genesis.transactions = Collections.emptyList();
     genesis.txCount = 0;
     genesis.timestamp = 0;
@@ -87,20 +81,20 @@ public class Block implements Serializable {
     return CryptoUtil.sha256Hex(payload);
   }
 
-  // Строит дерево Меркла над хешами транзакций блока
+  // Строит дерево Меркла над хешами транзакций блока с доменным разделением (RFC 6962)
   public String calculateMerkleRoot() {
     if (transactions == null || transactions.isEmpty()) return "0";
     List<String> tree = new ArrayList<>();
     for (Transaction tx : transactions) {
       if (tx == null || tx.hash == null || tx.hash.isEmpty()) return "0";
-      tree.add(tx.hash);
+      tree.add(CryptoUtil.sha256Hex("00" + tx.hash));
     }
 
     while (tree.size() > 1) {
       if (tree.size() % 2 != 0) tree.add(tree.get(tree.size() - 1));
       List<String> nextLevel = new ArrayList<>();
       for (int i = 0; i < tree.size(); i += 2) {
-        String combined = tree.get(i) + tree.get(i + 1);
+        String combined = "01" + tree.get(i) + tree.get(i + 1);
         nextLevel.add(CryptoUtil.sha256Hex(combined));
       }
       tree = nextLevel;
@@ -108,10 +102,7 @@ public class Block implements Serializable {
     return tree.get(0);
   }
 
-  /**
-   * Выполняет подбор Proof-of-Work nonce до достижения нужной сложности.
-   * Возвращает true при успешном нахождении валидного хеша, false при прерывании потока.
-   */
+  // Выполняет подбор Proof-of-Work nonce до достижения нужной сложности
   public boolean mineBlock(int difficulty) {
     String target = "0".repeat(Math.max(0, difficulty));
     long start = System.currentTimeMillis();

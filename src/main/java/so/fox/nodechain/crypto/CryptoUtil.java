@@ -14,7 +14,7 @@ import java.util.Base64;
 import java.util.HexFormat;
 import java.util.regex.Pattern;
 
-// Утилитный класс криптографических операций: RSA-2048, SHA-256, подписи и fox-адреса
+// Утилитный класс криптографических операций: Ed25519, SHA-256, подписи и fox-адреса
 public final class CryptoUtil {
 
   private static final HexFormat HEX = HexFormat.of();
@@ -22,54 +22,53 @@ public final class CryptoUtil {
 
   private CryptoUtil() {}
 
-  // Генерирует новую пару RSA ключей длиной 2048 бит
-  public static KeyPair generateRsaKeyPair() {
+  // Генерирует новую пару ключей алгоритма Ed25519
+  public static KeyPair generateKeyPair() {
     try {
-      KeyPairGenerator gen = KeyPairGenerator.getInstance("RSA");
-      gen.initialize(2048);
+      KeyPairGenerator gen = KeyPairGenerator.getInstance("Ed25519");
       return gen.generateKeyPair();
     } catch (Exception err) {
       return null;
     }
   }
 
-  // Восстанавливает открытый RSA ключ из строки Base64
+  // Восстанавливает открытый ключ Ed25519 из строки Base64 (X.509)
   public static PublicKey parsePublicKey(String b64Key) {
     if (b64Key == null || b64Key.isEmpty()) return null;
     try {
       byte[] bytes = Base64.getDecoder().decode(b64Key);
-      KeyFactory kf = KeyFactory.getInstance("RSA");
+      KeyFactory kf = KeyFactory.getInstance("Ed25519");
       return kf.generatePublic(new X509EncodedKeySpec(bytes));
     } catch (Exception err) {
       return null;
     }
   }
 
-  // Восстанавливает закрытый RSA ключ из строки Base64
+  // Восстанавливает закрытый ключ Ed25519 из строки Base64 (PKCS#8)
   public static PrivateKey parsePrivateKey(String b64Key) {
     if (b64Key == null || b64Key.isEmpty()) return null;
     try {
       byte[] bytes = Base64.getDecoder().decode(b64Key);
-      KeyFactory kf = KeyFactory.getInstance("RSA");
+      KeyFactory kf = KeyFactory.getInstance("Ed25519");
       return kf.generatePrivate(new PKCS8EncodedKeySpec(bytes));
     } catch (Exception err) {
       return null;
     }
   }
 
-  // Кодирует открытый RSA ключ в формат Base64
+  // Кодирует открытый ключ в формат Base64
   public static String encodePublicKey(PublicKey pubKey) {
     if (pubKey == null) return null;
     return Base64.getEncoder().encodeToString(pubKey.getEncoded());
   }
 
-  // Кодирует закрытый RSA ключ в формат Base64
+  // Кодирует закрытый ключ в формат Base64
   public static String encodePrivateKey(PrivateKey privKey) {
     if (privKey == null) return null;
     return Base64.getEncoder().encodeToString(privKey.getEncoded());
   }
 
-  // Вычисляет уникальный fox-адрес из открытого ключа RSA
+  // Вычисляет уникальный fox-адрес из открытого ключа
   public static String getAddressFromPublicKey(PublicKey pubKey) {
     if (pubKey == null) return null;
     byte[] hash = sha256Bytes(pubKey.getEncoded());
@@ -102,11 +101,11 @@ public final class CryptoUtil {
       && lower.indexOf('x') >= 0;
   }
 
-  // Создает цифровую подпись данных алгоритмом SHA256withRSA
+  // Создает цифровую подпись данных алгоритмом Ed25519
   public static String sign(PrivateKey privKey, String data) {
     if (privKey == null || data == null) return null;
     try {
-      Signature sig = Signature.getInstance("SHA256withRSA");
+      Signature sig = Signature.getInstance("Ed25519");
       sig.initSign(privKey);
       sig.update(data.getBytes(StandardCharsets.UTF_8));
       return Base64.getEncoder().encodeToString(sig.sign());
@@ -115,11 +114,11 @@ public final class CryptoUtil {
     }
   }
 
-  // Проверяет цифровую подпись данных открытым ключом RSA
+  // Проверяет цифровую подпись данных открытым ключом Ed25519
   public static boolean isSignatureValid(PublicKey pubKey, String data, String sigB64) {
     if (pubKey == null || data == null || sigB64 == null) return false;
     try {
-      Signature sig = Signature.getInstance("SHA256withRSA");
+      Signature sig = Signature.getInstance("Ed25519");
       sig.initVerify(pubKey);
       sig.update(data.getBytes(StandardCharsets.UTF_8));
       return sig.verify(Base64.getDecoder().decode(sigB64));

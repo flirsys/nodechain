@@ -38,7 +38,7 @@ public class Transaction implements Serializable {
     this.nonce = nonce;
     this.publicKey = publicKey;
     this.signature = signature;
-    this.comment = comment != null ? comment : "";
+    this.comment = comment != null ? comment.trim() : "";
     this.timestamp = System.currentTimeMillis();
     this.status = "pending";
     this.hash = calculateHash();
@@ -51,7 +51,7 @@ public class Transaction implements Serializable {
     return CryptoUtil.sha256Hex(payload);
   }
 
-  // Проверяет цифровую подпись транзакции открытым RSA-ключом отправителя
+  // Проверяет цифровую подпись транзакции открытым ключом Ed25519 отправителя
   public boolean isSignatureValid() {
     if (publicKey == null || signature == null || from == null) return false;
     PublicKey pubKey = CryptoUtil.parsePublicKey(publicKey);

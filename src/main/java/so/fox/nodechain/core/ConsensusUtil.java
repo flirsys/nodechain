@@ -34,8 +34,8 @@ public final class ConsensusUtil {
     return hash.startsWith(target);
   }
 
-  // Проверяет базовую корректность полей и цифровой подписи транзакции
-  public static Result<Void> validateTransactionBasics(Transaction tx) {
+  // Проверяет формат и хеш транзакции без тяжелой криптографической валидации подписи
+  public static Result<Void> validateTransactionFormat(Transaction tx) {
     if (tx == null || tx.from == null || tx.to == null) return Result.fail(409, "Транзакция отклонена");
     tx.from = tx.from.toLowerCase();
     tx.to = tx.to.toLowerCase();
@@ -46,6 +46,13 @@ public final class ConsensusUtil {
     if (tx.amount > Long.MAX_VALUE - tx.fee) return Result.fail(409, "Транзакция отклонена: переполнение суммы и комиссии");
     if (tx.comment != null && tx.comment.length() > 256) return Result.fail(409, "Транзакция отклонена: слишком длинный комментарий");
     if (tx.hash == null || !tx.hash.equals(tx.calculateHash())) return Result.fail(409, "Транзакция отклонена: неверный хеш");
+    return Result.ok(null);
+  }
+
+  // Проверяет базовую корректность полей и цифровой подписи транзакции
+  public static Result<Void> validateTransactionBasics(Transaction tx) {
+    Result<Void> formatRes = validateTransactionFormat(tx);
+    if (formatRes.isError()) return formatRes;
     if (!tx.isSignatureValid()) return Result.fail(400, "Подпись не верна");
     return Result.ok(null);
   }
@@ -63,13 +70,11 @@ public final class ConsensusUtil {
   // Вычисляет кумулятивную работу PoW для списка блоков
   public static BigInteger calculateChainWork(List<Block> blocks, int defaultDifficulty) {
     if (blocks == null || blocks.isEmpty()) return BigInteger.ZERO;
-    BigInteger totalWork = BigInteger.ZERO;
+    int count = 0;
     for (Block b : blocks) {
-      if (b == null) continue;
-      int diff = Math.max(1, defaultDifficulty);
-      totalWork = totalWork.add(BigInteger.valueOf(16).pow(diff));
+      if (b != null) count++;
     }
-    return totalWork;
+    return calculateChainWork(count, defaultDifficulty);
   }
 
   // Вычисляет кумулятивную работу PoW для указанного числа блоков и сложности
@@ -79,11 +84,7 @@ public final class ConsensusUtil {
     return singleBlockWork.multiply(BigInteger.valueOf(blockCount));
   }
 
-  /**
-   * Вычисляет награду за блок по каноническому алгоритму Bitcoin Core (Subsidy Halving).
-   * Каждые halvingInterval блоков базовое вознаграждение делится вдвое через битовый сдвиг (>> halvings).
-   * После 64 делений награда становится равной 0.
-   */
+  // Вычисляет награду за блок по алгоритму халвинга (Bitcoin Subsidy Halving)
   public static long calculateBlockSubsidy(long height, long initialReward, long halvingInterval) {
     if (height <= 0 || initialReward <= 0 || halvingInterval <= 0) return 0L;
     long halvings = height / halvingInterval;
