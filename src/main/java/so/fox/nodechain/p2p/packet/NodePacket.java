@@ -17,7 +17,8 @@ public class NodePacket {
   public static final short MAGIC = 0x4658;
   public static final byte FLAG_PLAIN = 0x00;
   public static final byte FLAG_GZIP = 0x01;
-  public static final int MAX_PAYLOAD_SIZE = 8 * 1024 * 1024;
+  public static final int MAX_PAYLOAD_SIZE = 4 * 1024 * 1024;
+  public static final int MAX_CONTROL_PAYLOAD_SIZE = 64 * 1024;
 
   private static final ObjectMapper MAPPER = new ObjectMapper();
 
@@ -105,7 +106,17 @@ public class NodePacket {
     int reqId = dis.readInt();
     byte op = dis.readByte();
     int len = dis.readInt();
-    if (len < 0 || len > MAX_PAYLOAD_SIZE) throw new IOException("Некорректная длина пакета: " + len);
+
+    int maxAllowed = switch (op) {
+      case OpCode.PING, OpCode.PONG -> 16;
+      case OpCode.HANDSHAKE, OpCode.HANDSHAKE_ACK, OpCode.GET_PEERS, OpCode.PEERS_LIST,
+           OpCode.NEW_TX_ANNOUNCE, OpCode.GET_BLOCKS -> MAX_CONTROL_PAYLOAD_SIZE;
+      default -> MAX_PAYLOAD_SIZE;
+    };
+
+    if (len < 0 || len > maxAllowed) {
+      throw new IOException("Некорректная длина пакета (" + len + " байт) для опкода " + op);
+    }
 
     byte[] raw = new byte[len];
     dis.readFully(raw);

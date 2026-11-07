@@ -14,16 +14,21 @@ public class BlockRepository {
 
   private final JdbcTemplate jdbcTemplate;
 
-  private static final RowMapper<Block> ROW_MAPPER = (rs, i) -> new Block(new Block.Meta(
-    rs.getLong("height"),
-    rs.getString("hash"),
-    rs.getString("previous_hash"),
-    rs.getString("merkle_root"),
-    rs.getString("miner_address"),
-    rs.getInt("tx_count"),
-    rs.getLong("timestamp"),
-    rs.getLong("nonce")
-  ));
+  private static final RowMapper<Block> ROW_MAPPER = (rs, i) -> {
+    int diff = rs.getInt("difficulty");
+    if (diff <= 0) diff = 4;
+    return new Block(new Block.Meta(
+      rs.getLong("height"),
+      rs.getString("hash"),
+      rs.getString("previous_hash"),
+      rs.getString("merkle_root"),
+      rs.getString("miner_address"),
+      rs.getInt("tx_count"),
+      rs.getLong("timestamp"),
+      diff,
+      rs.getLong("nonce")
+    ));
+  };
 
   public BlockRepository(JdbcTemplate jdbcTemplate) {
     this.jdbcTemplate = jdbcTemplate;
@@ -33,11 +38,11 @@ public class BlockRepository {
   public void save(Block b) {
     if (b == null) return;
     jdbcTemplate.update("""
-      INSERT OR REPLACE INTO blocks (height, hash, previous_hash, merkle_root, miner_address, tx_count, timestamp, nonce)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT OR REPLACE INTO blocks (height, hash, previous_hash, merkle_root, miner_address, tx_count, timestamp, difficulty, nonce)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, b.height, b.hash, b.previousHash, b.merkleRoot,
       b.minerAddress != null ? b.minerAddress : "",
-      b.txCount, b.timestamp, b.nonce);
+      b.txCount, b.timestamp, b.difficulty > 0 ? b.difficulty : 4, b.nonce);
   }
 
   // Находит блок по его высоте (номеру)

@@ -169,11 +169,12 @@ public class BlockchainIntegrationTest {
     long amount = 300L;
     long fee = 50L;
     long nonce = 0L;
-    String signData = sender + "|" + recipient + "|" + amount + "|" + fee + "|" + nonce;
+    String signData = Transaction.buildCanonicalData(nodeConfig.chainId, sender, recipient, amount, fee, nonce, "");
     String sig = CryptoUtil.sign(senderKp.getPrivate(), signData);
     String pubKeyB64 = CryptoUtil.encodePublicKey(senderKp.getPublic());
 
     SendTxRequest req = new SendTxRequest(
+      nodeConfig.chainId,
       sender,
       recipient,
       amount,
@@ -241,10 +242,11 @@ public class BlockchainIntegrationTest {
       latest.height + 1,
       latest.hash,
       "miner-future",
-      Collections.emptyList()
+      Collections.emptyList(),
+      nodeConfig.difficulty
     );
     futureBlock.timestamp = System.currentTimeMillis() + 800_000;
-    futureBlock.mineBlock(2);
+    futureBlock.mineBlock(nodeConfig.difficulty);
     boolean isFutureApplied = blockchainService.applyIncomingBlock(futureBlock);
     Assertions.assertFalse(isFutureApplied, "Block from distant future must be rejected");
 
@@ -252,10 +254,11 @@ public class BlockchainIntegrationTest {
       latest.height + 1,
       latest.hash,
       "miner-past",
-      Collections.emptyList()
+      Collections.emptyList(),
+      nodeConfig.difficulty
     );
     pastBlock.timestamp = latest.timestamp - 1000;
-    pastBlock.mineBlock(2);
+    pastBlock.mineBlock(nodeConfig.difficulty);
     boolean isPastApplied = blockchainService.applyIncomingBlock(pastBlock);
     Assertions.assertFalse(isPastApplied, "Block older than previous block must be rejected");
   }
@@ -278,9 +281,9 @@ public class BlockchainIntegrationTest {
     Block lastForkBlock = null;
 
     for (long h = 1; h <= targetHeight; h++) {
-      Block fb = new Block(h, prevHash, altMiner, Collections.emptyList());
+      Block fb = new Block(h, prevHash, altMiner, Collections.emptyList(), nodeConfig.difficulty);
       fb.timestamp = base + (h * 100);
-      fb.mineBlock(2);
+      fb.mineBlock(nodeConfig.difficulty);
       forkChain.add(fb);
       prevHash = fb.hash;
       lastForkBlock = fb;
@@ -321,28 +324,28 @@ public class BlockchainIntegrationTest {
       a2.nonce = 0L;
       blockchainService.saveAccount(a2);
 
-      String d1 = addr1 + "|" + addr2 + "|100|20|0";
+      String d1 = Transaction.buildCanonicalData(nodeConfig.chainId, addr1, addr2, 100L, 20L, 0L, "");
       String sig1 = CryptoUtil.sign(p1.getPrivate(), d1);
       Transaction tx1 = new Transaction(
-        addr1, addr2, 100L, 20L, 0L, CryptoUtil.encodePublicKey(p1.getPublic()), sig1, ""
+        nodeConfig.chainId, addr1, addr2, 100L, 20L, 0L, CryptoUtil.encodePublicKey(p1.getPublic()), sig1, ""
       );
       var res1 = blockchainService.submitTransaction(tx1, false);
       Assertions.assertFalse(res1.isError());
 
-      String d2 = addr2 + "|" + addr1 + "|100|10|0";
+      String d2 = Transaction.buildCanonicalData(nodeConfig.chainId, addr2, addr1, 100L, 10L, 0L, "");
       String sig2 = CryptoUtil.sign(p2.getPrivate(), d2);
       Transaction tx2 = new Transaction(
-        addr2, addr1, 100L, 10L, 0L, CryptoUtil.encodePublicKey(p2.getPublic()), sig2, ""
+        nodeConfig.chainId, addr2, addr1, 100L, 10L, 0L, CryptoUtil.encodePublicKey(p2.getPublic()), sig2, ""
       );
       var res2 = blockchainService.submitTransaction(tx2, false);
       Assertions.assertTrue(res2.isError());
       Assertions.assertEquals(429, res2.status);
       Assertions.assertEquals("Mempool переполнен", res2.error);
 
-      String d3 = addr2 + "|" + addr1 + "|100|50|0";
+      String d3 = Transaction.buildCanonicalData(nodeConfig.chainId, addr2, addr1, 100L, 50L, 0L, "");
       String sig3 = CryptoUtil.sign(p2.getPrivate(), d3);
       Transaction tx3 = new Transaction(
-        addr2, addr1, 100L, 50L, 0L, CryptoUtil.encodePublicKey(p2.getPublic()), sig3, ""
+        nodeConfig.chainId, addr2, addr1, 100L, 50L, 0L, CryptoUtil.encodePublicKey(p2.getPublic()), sig3, ""
       );
       var res3 = blockchainService.submitTransaction(tx3, false);
       Assertions.assertFalse(res3.isError());
@@ -373,20 +376,20 @@ public class BlockchainIntegrationTest {
       KeyPair dummyKp = CryptoUtil.generateKeyPair();
       String dummyAddr = CryptoUtil.getAddressFromPublicKey(dummyKp.getPublic());
 
-      String legitData = legitAddr + "|" + dummyAddr + "|100|10|0";
+      String legitData = Transaction.buildCanonicalData(nodeConfig.chainId, legitAddr, dummyAddr, 100L, 10L, 0L, "");
       String legitSig = CryptoUtil.sign(legitKp.getPrivate(), legitData);
       Transaction legitTx = new Transaction(
-        legitAddr, dummyAddr, 100L, 10L, 0L, CryptoUtil.encodePublicKey(legitKp.getPublic()), legitSig, ""
+        nodeConfig.chainId, legitAddr, dummyAddr, 100L, 10L, 0L, CryptoUtil.encodePublicKey(legitKp.getPublic()), legitSig, ""
       );
       var legitRes = blockchainService.submitTransaction(legitTx, false);
       Assertions.assertFalse(legitRes.isError());
 
       KeyPair attackerKp = CryptoUtil.generateKeyPair();
       String attackerAddr = CryptoUtil.getAddressFromPublicKey(attackerKp.getPublic());
-      String attackData = attackerAddr + "|" + dummyAddr + "|100|999999|0";
+      String attackData = Transaction.buildCanonicalData(nodeConfig.chainId, attackerAddr, dummyAddr, 100L, 999999L, 0L, "");
       String attackSig = CryptoUtil.sign(attackerKp.getPrivate(), attackData);
       Transaction attackTx = new Transaction(
-        attackerAddr, dummyAddr, 100L, 999999L, 0L, CryptoUtil.encodePublicKey(attackerKp.getPublic()), attackSig, ""
+        nodeConfig.chainId, attackerAddr, dummyAddr, 100L, 999999L, 0L, CryptoUtil.encodePublicKey(attackerKp.getPublic()), attackSig, ""
       );
       var attackRes = blockchainService.submitTransaction(attackTx, false);
       Assertions.assertTrue(attackRes.isError());
@@ -417,15 +420,15 @@ public class BlockchainIntegrationTest {
     KeyPair p2 = CryptoUtil.generateKeyPair();
     String addr2 = CryptoUtil.getAddressFromPublicKey(p2.getPublic());
 
-    String d1 = addr1 + "|" + addr2 + "|10|10|0";
+    String d1 = Transaction.buildCanonicalData(nodeConfig.chainId, addr1, addr2, 10L, 10L, 0L, "");
     String sig1 = CryptoUtil.sign(p1.getPrivate(), d1);
-    Transaction tx1 = new Transaction(addr1, addr2, 10L, 10L, 0L, CryptoUtil.encodePublicKey(p1.getPublic()), sig1, "");
+    Transaction tx1 = new Transaction(nodeConfig.chainId, addr1, addr2, 10L, 10L, 0L, CryptoUtil.encodePublicKey(p1.getPublic()), sig1, "");
     tx1.timestamp = System.currentTimeMillis() - 5000;
     blockchainService.submitTransaction(tx1, false);
 
-    String d2 = addr1 + "|" + addr2 + "|20|100|1";
+    String d2 = Transaction.buildCanonicalData(nodeConfig.chainId, addr1, addr2, 20L, 100L, 1L, "");
     String sig2 = CryptoUtil.sign(p1.getPrivate(), d2);
-    Transaction tx2 = new Transaction(addr1, addr2, 20L, 100L, 1L, CryptoUtil.encodePublicKey(p1.getPublic()), sig2, "");
+    Transaction tx2 = new Transaction(nodeConfig.chainId, addr1, addr2, 20L, 100L, 1L, CryptoUtil.encodePublicKey(p1.getPublic()), sig2, "");
     tx2.timestamp = System.currentTimeMillis();
     blockchainService.submitTransaction(tx2, false);
 
@@ -471,19 +474,19 @@ public class BlockchainIntegrationTest {
     String charlie = CryptoUtil.getAddressFromPublicKey(charlieKp.getPublic());
 
     // Bob -> Alice (500), pending in mempool
-    String bobData = bob + "|" + alice + "|500|50|0";
+    String bobData = Transaction.buildCanonicalData(nodeConfig.chainId, bob, alice, 500L, 50L, 0L, "");
     String bobSig = CryptoUtil.sign(bobKp.getPrivate(), bobData);
     Transaction bobTx = new Transaction(
-      bob, alice, 500L, 50L, 0L, CryptoUtil.encodePublicKey(bobKp.getPublic()), bobSig, ""
+      nodeConfig.chainId, bob, alice, 500L, 50L, 0L, CryptoUtil.encodePublicKey(bobKp.getPublic()), bobSig, ""
     );
     var bobRes = blockchainService.submitTransaction(bobTx, false);
     Assertions.assertFalse(bobRes.isError());
 
     // Alice tries to spend 200 to Charlie before Bob's tx is confirmed -> must fail!
-    String aliceData = alice + "|" + charlie + "|200|20|0";
+    String aliceData = Transaction.buildCanonicalData(nodeConfig.chainId, alice, charlie, 200L, 20L, 0L, "");
     String aliceSig = CryptoUtil.sign(aliceKp.getPrivate(), aliceData);
     Transaction aliceTx = new Transaction(
-      alice, charlie, 200L, 20L, 0L, CryptoUtil.encodePublicKey(aliceKp.getPublic()), aliceSig, ""
+      nodeConfig.chainId, alice, charlie, 200L, 20L, 0L, CryptoUtil.encodePublicKey(aliceKp.getPublic()), aliceSig, ""
     );
     var aliceRes = blockchainService.submitTransaction(aliceTx, false);
     Assertions.assertTrue(aliceRes.isError());
@@ -514,19 +517,19 @@ public class BlockchainIntegrationTest {
     String destAddr = CryptoUtil.getAddressFromPublicKey(destKp.getPublic());
 
     // Low fee transaction submitted earlier
-    String lowData = lowAddr + "|" + destAddr + "|100|10|0";
+    String lowData = Transaction.buildCanonicalData(nodeConfig.chainId, lowAddr, destAddr, 100L, 10L, 0L, "");
     String lowSig = CryptoUtil.sign(lowKp.getPrivate(), lowData);
     Transaction lowTx = new Transaction(
-      lowAddr, destAddr, 100L, 10L, 0L, CryptoUtil.encodePublicKey(lowKp.getPublic()), lowSig, ""
+      nodeConfig.chainId, lowAddr, destAddr, 100L, 10L, 0L, CryptoUtil.encodePublicKey(lowKp.getPublic()), lowSig, ""
     );
     lowTx.timestamp = System.currentTimeMillis() - 2000;
     blockchainService.submitTransaction(lowTx, false);
 
     // High fee transaction submitted later
-    String highData = highAddr + "|" + destAddr + "|100|500|0";
+    String highData = Transaction.buildCanonicalData(nodeConfig.chainId, highAddr, destAddr, 100L, 500L, 0L, "");
     String highSig = CryptoUtil.sign(highKp.getPrivate(), highData);
     Transaction highTx = new Transaction(
-      highAddr, destAddr, 100L, 500L, 0L, CryptoUtil.encodePublicKey(highKp.getPublic()), highSig, ""
+      nodeConfig.chainId, highAddr, destAddr, 100L, 500L, 0L, CryptoUtil.encodePublicKey(highKp.getPublic()), highSig, ""
     );
     highTx.timestamp = System.currentTimeMillis();
     blockchainService.submitTransaction(highTx, false);
@@ -554,15 +557,15 @@ public class BlockchainIntegrationTest {
     KeyPair destKp = CryptoUtil.generateKeyPair();
     String dest = CryptoUtil.getAddressFromPublicKey(destKp.getPublic());
 
-    String d0 = sender + "|" + dest + "|100|10|0";
+    String d0 = Transaction.buildCanonicalData(nodeConfig.chainId, sender, dest, 100L, 10L, 0L, "");
     String sig0 = CryptoUtil.sign(kp.getPrivate(), d0);
-    Transaction tx0 = new Transaction(sender, dest, 100L, 10L, 0L, CryptoUtil.encodePublicKey(kp.getPublic()), sig0, "");
+    Transaction tx0 = new Transaction(nodeConfig.chainId, sender, dest, 100L, 10L, 0L, CryptoUtil.encodePublicKey(kp.getPublic()), sig0, "");
     var res0 = blockchainService.submitTransaction(tx0, false);
     Assertions.assertFalse(res0.isError(), "Nonce 0 must be accepted into mempool");
 
-    String d1 = sender + "|" + dest + "|200|15|1";
+    String d1 = Transaction.buildCanonicalData(nodeConfig.chainId, sender, dest, 200L, 15L, 1L, "");
     String sig1 = CryptoUtil.sign(kp.getPrivate(), d1);
-    Transaction tx1 = new Transaction(sender, dest, 200L, 15L, 1L, CryptoUtil.encodePublicKey(kp.getPublic()), sig1, "");
+    Transaction tx1 = new Transaction(nodeConfig.chainId, sender, dest, 200L, 15L, 1L, CryptoUtil.encodePublicKey(kp.getPublic()), sig1, "");
     var res1 = blockchainService.submitTransaction(tx1, false);
     Assertions.assertFalse(res1.isError(), "Sequential nonce 1 must be accepted into mempool");
 
@@ -585,15 +588,15 @@ public class BlockchainIntegrationTest {
     String dest = CryptoUtil.getAddressFromPublicKey(destKp.getPublic());
 
     // Честный отправитель подписал транзакцию без комментария
-    String data = sender + "|" + dest + "|100|10|0";
+    String data = Transaction.buildCanonicalData(nodeConfig.chainId, sender, dest, 100L, 10L, 0L, "");
     String sig = CryptoUtil.sign(kp.getPrivate(), data);
 
-    Transaction tx = new Transaction(sender, dest, 100L, 10L, 0L, CryptoUtil.encodePublicKey(kp.getPublic()), sig, "");
-    Assertions.assertTrue(tx.isSignatureValid());
+    Transaction tx = new Transaction(nodeConfig.chainId, sender, dest, 100L, 10L, 0L, CryptoUtil.encodePublicKey(kp.getPublic()), sig, "");
+    Assertions.assertTrue(tx.isSignatureValid(nodeConfig.chainId));
 
     // Злоумышленник внедряет комментарий в перехваченную транзакцию
     tx.comment = "attacker_injected_comment";
-    Assertions.assertFalse(tx.isSignatureValid(), "Tampered comment must invalidate transaction signature");
+    Assertions.assertFalse(tx.isSignatureValid(nodeConfig.chainId), "Tampered comment must invalidate transaction signature");
   }
 
   /**
@@ -607,17 +610,17 @@ public class BlockchainIntegrationTest {
     String dest = CryptoUtil.getAddressFromPublicKey(destKp.getPublic());
 
     String longComment = "a".repeat(257);
-    String data = sender + "|" + dest + "|100|10|0|" + longComment;
+    String data = Transaction.buildCanonicalData(nodeConfig.chainId, sender, dest, 100L, 10L, 0L, longComment);
     String sig = CryptoUtil.sign(kp.getPrivate(), data);
 
-    Transaction tx = new Transaction(sender, dest, 100L, 10L, 0L, CryptoUtil.encodePublicKey(kp.getPublic()), sig, longComment);
+    Transaction tx = new Transaction(nodeConfig.chainId, sender, dest, 100L, 10L, 0L, CryptoUtil.encodePublicKey(kp.getPublic()), sig, longComment);
     var res = blockchainService.submitTransaction(tx, false);
     Assertions.assertTrue(res.isError());
     Assertions.assertEquals("Транзакция отклонена: слишком длинный комментарий", res.error);
 
     tx.comment = "";
     tx.hash = null;
-    var hashRes = ConsensusUtil.validateTransactionBasics(tx);
+    var hashRes = ConsensusUtil.validateTransactionBasics(tx, nodeConfig.chainId);
     Assertions.assertTrue(hashRes.isError());
     Assertions.assertEquals("Транзакция отклонена: неверный хеш", hashRes.error);
   }
@@ -643,13 +646,13 @@ public class BlockchainIntegrationTest {
   @Test
   public void testBlockInvalidTxCountOrMinerAddressRejection() {
     Block latest = blockchainService.getLatestBlockHeader();
-    Block b = new Block(latest.height + 1, latest.hash, "invalid_miner_addr", Collections.emptyList());
-    b.mineBlock(2);
+    Block b = new Block(latest.height + 1, latest.hash, "invalid_miner_addr", Collections.emptyList(), nodeConfig.difficulty);
+    b.mineBlock(nodeConfig.difficulty);
     Assertions.assertFalse(blockchainService.applyIncomingBlock(b), "Block with invalid minerAddress must be rejected");
 
-    Block b2 = new Block(latest.height + 1, latest.hash, latest.minerAddress, Collections.emptyList());
+    Block b2 = new Block(latest.height + 1, latest.hash, latest.minerAddress, Collections.emptyList(), nodeConfig.difficulty);
     b2.txCount = 999;
-    b2.mineBlock(2);
+    b2.mineBlock(nodeConfig.difficulty);
     Assertions.assertFalse(blockchainService.applyIncomingBlock(b2), "Block with mismatched txCount must be rejected");
   }
 }

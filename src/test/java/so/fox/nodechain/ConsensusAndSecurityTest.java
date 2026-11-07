@@ -80,7 +80,7 @@ public class ConsensusAndSecurityTest {
    */
   @Test
   public void testInterruptedMiningAbortsCleanly() {
-    Block b = new Block(999, "prev", nodeWalletService.address, List.of());
+    Block b = new Block(999, "prev", nodeWalletService.address, List.of(), 4);
     Thread.currentThread().interrupt();
     boolean isMined = b.mineBlock(20);
     Assertions.assertFalse(isMined, "Interrupted thread must return false from mineBlock");
@@ -97,9 +97,9 @@ public class ConsensusAndSecurityTest {
     KeyPair kp2 = CryptoUtil.generateKeyPair();
     String addr2 = CryptoUtil.getAddressFromPublicKey(kp2.getPublic());
 
-    String data = addr1 + "|" + addr2 + "|10|5|0";
+    String data = Transaction.buildCanonicalData(nodeConfig.chainId, addr1, addr2, 10L, 5L, 0L, "");
     String sig = CryptoUtil.sign(kp.getPrivate(), data);
-    Transaction tx = new Transaction(addr1, addr2, 10L, 5L, 0L, CryptoUtil.encodePublicKey(kp.getPublic()), sig, "");
+    Transaction tx = new Transaction(nodeConfig.chainId, addr1, addr2, 10L, 5L, 0L, CryptoUtil.encodePublicKey(kp.getPublic()), sig, "");
 
     boolean areUnique = ConsensusUtil.areTransactionsUnique(List.of(tx, tx));
     Assertions.assertFalse(areUnique, "Block with duplicate tx hashes must be rejected");
@@ -166,9 +166,15 @@ public class ConsensusAndSecurityTest {
    */
   @Test
   public void testCumulativeChainWorkCalculation() {
-    BigInteger work1 = ConsensusUtil.calculateChainWork(5, 2);
-    BigInteger work2 = ConsensusUtil.calculateChainWork(6, 2);
-    BigInteger workHighDiff = ConsensusUtil.calculateChainWork(1, 3);
+    Block b2 = new Block(1, "0", "m", List.of(), 2);
+    Block b3 = new Block(1, "0", "m", List.of(), 3);
+    List<Block> chain5 = List.of(b2, b2, b2, b2, b2);
+    List<Block> chain6 = List.of(b2, b2, b2, b2, b2, b2);
+    List<Block> chainHighDiff = List.of(b3);
+
+    BigInteger work1 = ConsensusUtil.calculateChainWork(chain5, 2);
+    BigInteger work2 = ConsensusUtil.calculateChainWork(chain6, 2);
+    BigInteger workHighDiff = ConsensusUtil.calculateChainWork(chainHighDiff, 2);
 
     Assertions.assertTrue(work2.compareTo(work1) > 0, "Longer branch must have greater cumulative work");
     Assertions.assertTrue(workHighDiff.compareTo(work1) > 0, "Higher difficulty must have greater weight");
@@ -207,9 +213,9 @@ public class ConsensusAndSecurityTest {
     String addr2 = CryptoUtil.getAddressFromPublicKey(kp2.getPublic());
 
     Transaction overflowTx = new Transaction(
-      addr1, addr2, Long.MAX_VALUE - 5, 100L, 0L, CryptoUtil.encodePublicKey(kp.getPublic()), "sig", ""
+      nodeConfig.chainId, addr1, addr2, Long.MAX_VALUE - 5, 100L, 0L, CryptoUtil.encodePublicKey(kp.getPublic()), "sig", ""
     );
-    var res = ConsensusUtil.validateTransactionBasics(overflowTx);
+    var res = ConsensusUtil.validateTransactionBasics(overflowTx, nodeConfig.chainId);
     Assertions.assertTrue(res.isError(), "Amount + fee overflow must be rejected");
   }
 
@@ -223,7 +229,7 @@ public class ConsensusAndSecurityTest {
     String pubKeyStr = CryptoUtil.encodePublicKey(peerKp.getPublic());
     long now = System.currentTimeMillis();
     String sessionNonce = UUID.randomUUID().toString();
-    java.util.Set<String> seenNonces = ConcurrentHashMap.newKeySet();
+    java.util.Map<String, Long> seenNonces = new ConcurrentHashMap<>();
     P2pClientManager.HandshakeContext ctx = new P2pClientManager.HandshakeContext("local-id", "foxchain-main-1", now, seenNonces);
 
     HandshakeMessage unsignedMsg = new HandshakeMessage(
@@ -272,9 +278,9 @@ public class ConsensusAndSecurityTest {
     KeyPair kp2 = CryptoUtil.generateKeyPair();
     String addr2 = CryptoUtil.getAddressFromPublicKey(kp2.getPublic());
 
-    String data = addr1 + "|" + addr2 + "|500|50|0";
+    String data = Transaction.buildCanonicalData(nodeConfig.chainId, addr1, addr2, 500L, 50L, 0L, "");
     String sig = CryptoUtil.sign(kp1.getPrivate(), data);
-    Transaction tx = new Transaction(addr1, addr2, 500L, 50L, 0L, CryptoUtil.encodePublicKey(kp1.getPublic()), sig, "");
+    Transaction tx = new Transaction(nodeConfig.chainId, addr1, addr2, 500L, 50L, 0L, CryptoUtil.encodePublicKey(kp1.getPublic()), sig, "");
 
     var submitRes = blockchainService.submitTransaction(tx, false);
     Assertions.assertFalse(submitRes.isError());
@@ -284,9 +290,9 @@ public class ConsensusAndSecurityTest {
 
     Block duplicateBlock = new Block(
       mined.height + 1, mined.hash, nodeWalletService.address,
-      List.of(tx)
+      List.of(tx), nodeConfig.difficulty
     );
-    duplicateBlock.mineBlock(2);
+    duplicateBlock.mineBlock(nodeConfig.difficulty);
 
     boolean isApplied = blockchainService.applyIncomingBlock(duplicateBlock);
     Assertions.assertFalse(isApplied, "Block re-including already confirmed transaction must be rejected");
@@ -320,10 +326,10 @@ public class ConsensusAndSecurityTest {
     String upperFrom = addr.toUpperCase();
     String upperTo = addr.toUpperCase();
 
-    String data = addr.toLowerCase() + "|" + addr.toLowerCase() + "|100|10|0|test";
+    String data = Transaction.buildCanonicalData(nodeConfig.chainId, addr.toLowerCase(), addr.toLowerCase(), 100L, 10L, 0L, "test");
     String sig = CryptoUtil.sign(kp.getPrivate(), data);
 
-    Transaction tx = new Transaction(upperFrom, upperTo, 100L, 10L, 0L, CryptoUtil.encodePublicKey(kp.getPublic()), sig, "test");
+    Transaction tx = new Transaction(nodeConfig.chainId, upperFrom, upperTo, 100L, 10L, 0L, CryptoUtil.encodePublicKey(kp.getPublic()), sig, "test");
     Assertions.assertEquals(addr.toLowerCase(), tx.from);
     Assertions.assertEquals(addr.toLowerCase(), tx.to);
     Assertions.assertEquals(tx.calculateHash(), tx.hash);
@@ -346,15 +352,15 @@ public class ConsensusAndSecurityTest {
       KeyPair recKp = CryptoUtil.generateKeyPair();
       String recAddr = CryptoUtil.getAddressFromPublicKey(recKp.getPublic());
 
-      String d0 = addr + "|" + recAddr + "|100|5|0";
+      String d0 = Transaction.buildCanonicalData(nodeConfig.chainId, addr, recAddr, 100L, 5L, 0L, "");
       String s0 = CryptoUtil.sign(kp.getPrivate(), d0);
-      Transaction tx0 = new Transaction(addr, recAddr, 100L, 5L, 0L, CryptoUtil.encodePublicKey(kp.getPublic()), s0, "");
+      Transaction tx0 = new Transaction(nodeConfig.chainId, addr, recAddr, 100L, 5L, 0L, CryptoUtil.encodePublicKey(kp.getPublic()), s0, "");
       var res0 = blockchainService.submitTransaction(tx0, false);
       Assertions.assertFalse(res0.isError(), "tx0 submission must succeed");
 
-      String d1 = addr + "|" + recAddr + "|100|50|1";
+      String d1 = Transaction.buildCanonicalData(nodeConfig.chainId, addr, recAddr, 100L, 50L, 1L, "");
       String s1 = CryptoUtil.sign(kp.getPrivate(), d1);
-      Transaction tx1 = new Transaction(addr, recAddr, 100L, 50L, 1L, CryptoUtil.encodePublicKey(kp.getPublic()), s1, "");
+      Transaction tx1 = new Transaction(nodeConfig.chainId, addr, recAddr, 100L, 50L, 1L, CryptoUtil.encodePublicKey(kp.getPublic()), s1, "");
       var res1 = blockchainService.submitTransaction(tx1, false);
       Assertions.assertFalse(res1.isError(), "tx1 submission must succeed");
 
@@ -364,9 +370,9 @@ public class ConsensusAndSecurityTest {
       acc2.balance = 100_000L;
       blockchainService.saveAccount(acc2);
 
-      String d2 = addr2 + "|" + recAddr + "|100|20|0";
+      String d2 = Transaction.buildCanonicalData(nodeConfig.chainId, addr2, recAddr, 100L, 20L, 0L, "");
       String s2 = CryptoUtil.sign(kp2.getPrivate(), d2);
-      Transaction tx2 = new Transaction(addr2, recAddr, 100L, 20L, 0L, CryptoUtil.encodePublicKey(kp2.getPublic()), s2, "");
+      Transaction tx2 = new Transaction(nodeConfig.chainId, addr2, recAddr, 100L, 20L, 0L, CryptoUtil.encodePublicKey(kp2.getPublic()), s2, "");
 
       var res = blockchainService.submitTransaction(tx2, false);
       Assertions.assertTrue(res.isError(), "Cannot evict protected non-tail tx0 or higher fee tail tx1");

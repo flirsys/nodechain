@@ -59,10 +59,10 @@ public class ClaudeReviewVerificationTest {
       // Node A создает транзакцию с тратой своего премайна:
       KeyPair recipient = CryptoUtil.generateKeyPair();
       String recipientAddr = CryptoUtil.getAddressFromPublicKey(recipient.getPublic());
-      String signable = nodeA.wallet.address + "|" + recipientAddr + "|1000|50|0|Premining spend";
+      String signable = Transaction.buildCanonicalData(nodeA.config.chainId, nodeA.wallet.address, recipientAddr, 1000L, 50L, 0L, "Premining spend");
       String sig = CryptoUtil.sign(nodeA.wallet.privateKey, signable);
       Transaction tx = new Transaction(
-        nodeA.wallet.address, recipientAddr, 1000L, 50L, 0L,
+        nodeA.config.chainId, nodeA.wallet.address, recipientAddr, 1000L, 50L, 0L,
         CryptoUtil.encodePublicKey(nodeA.wallet.publicKey), sig, "Premining spend"
       );
 
@@ -99,24 +99,25 @@ public class ClaudeReviewVerificationTest {
     long fee = 50L;
     long nonce = 0L;
     String comment = "Testnet payment";
+    String chainId = "foxchain-test-1";
 
-    String canonical = userAddr + "|" + recipientAddr + "|" + amount + "|" + fee + "|" + nonce + "|" + comment;
+    String canonical = Transaction.buildCanonicalData(chainId, userAddr, recipientAddr, amount, fee, nonce, comment);
     String signature = CryptoUtil.sign(userKey.getPrivate(), canonical);
 
-    Transaction tx = new Transaction(userAddr, recipientAddr, amount, fee, nonce, pubKeyStr, signature, comment);
+    Transaction tx = new Transaction(chainId, userAddr, recipientAddr, amount, fee, nonce, pubKeyStr, signature, comment);
 
-    Assertions.assertTrue(tx.isSignatureValid());
-    Result<Void> valRes = ConsensusUtil.validateTransactionBasics(tx);
+    Assertions.assertTrue(tx.isSignatureValid(chainId));
+    Result<Void> valRes = ConsensusUtil.validateTransactionBasics(tx, chainId);
     Assertions.assertTrue(valRes.isOk);
-    Assertions.assertFalse(canonical.contains("foxchain-main-1"));
+    Assertions.assertTrue(canonical.contains("foxchain-test-1"));
   }
 
   // --- ПУНКТ 3: CHAINWORK & DIFFICULTY ---
   @Test
   @DisplayName("Пункт 3: Проверка ChainWork на BigInteger (отсутствие overflow) и статичность сложности")
   public void testPoint3_ChainWorkBigIntegerAndStaticDifficulty() {
-    BigInteger workDiff16 = ConsensusUtil.calculateChainWork(1, 16);
-    BigInteger workDiff32 = ConsensusUtil.calculateChainWork(1, 32);
+    BigInteger workDiff16 = ConsensusUtil.calculateBlockWork(16);
+    BigInteger workDiff32 = ConsensusUtil.calculateBlockWork(32);
 
     BigInteger longMax = BigInteger.valueOf(Long.MAX_VALUE);
     Assertions.assertTrue(workDiff16.compareTo(longMax) > 0, "16^16 должно превышать Long.MAX_VALUE");
@@ -180,7 +181,7 @@ public class ClaudeReviewVerificationTest {
       nodeAId, chainId, 0, latestHash, 9090, "1.0.0", now, pubKeyStr, sig, sessionNonce
     );
 
-    java.util.Set<String> seenNonces = ConcurrentHashMap.newKeySet();
+    java.util.Map<String, Long> seenNonces = new ConcurrentHashMap<>();
     HandshakeContext ctx1 = new HandshakeContext("bob-node", chainId, now, seenNonces);
 
     // Первичный Handshake успешно принимается:
@@ -203,7 +204,7 @@ public class ClaudeReviewVerificationTest {
 
     // Транзакция с некорректной суммой (-10):
     Transaction badAmountTx = new Transaction(
-      attackerAddr, victimAddr, -10L, 50L, 0L,
+      "foxchain-main-1", attackerAddr, victimAddr, -10L, 50L, 0L,
       CryptoUtil.encodePublicKey(attackerKey.getPublic()),
       "invalid-signature", "Spam"
     );
@@ -222,10 +223,10 @@ public class ClaudeReviewVerificationTest {
     String addrA = CryptoUtil.getAddressFromPublicKey(key.getPublic());
     String addrB = CryptoUtil.getAddressFromPublicKey(CryptoUtil.generateKeyPair().getPublic());
 
-    Transaction tx1 = new Transaction(addrA, addrB, 10L, 5L, 0L, CryptoUtil.encodePublicKey(key.getPublic()), "sig1", "tx1");
-    Transaction tx2 = new Transaction(addrA, addrB, 20L, 5L, 1L, CryptoUtil.encodePublicKey(key.getPublic()), "sig2", "tx2");
+    Transaction tx1 = new Transaction("foxchain-main-1", addrA, addrB, 10L, 5L, 0L, CryptoUtil.encodePublicKey(key.getPublic()), "sig1", "tx1");
+    Transaction tx2 = new Transaction("foxchain-main-1", addrA, addrB, 20L, 5L, 1L, CryptoUtil.encodePublicKey(key.getPublic()), "sig2", "tx2");
 
-    Block b = new Block(1, "0", addrA, List.of(tx1, tx2));
+    Block b = new Block(1, "0", addrA, List.of(tx1, tx2), 4);
     String root = b.calculateMerkleRoot();
 
     // Проверяем RFC 6962 доменное разделение:

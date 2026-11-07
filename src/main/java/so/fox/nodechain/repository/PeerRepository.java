@@ -27,6 +27,12 @@ public class PeerRepository {
     return jdbcTemplate.query("SELECT * FROM peers ORDER BY last_seen DESC", ROW_MAPPER);
   }
 
+  // Возвращает общее количество известных пиров в базе данных
+  public long count() {
+    Long count = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM peers", Long.class);
+    return count != null ? count : 0L;
+  }
+
   // Сохраняет или обновляет отметку времени активности пира
   public void saveOrUpdate(PeerInfo peer) {
     if (peer == null) return;
@@ -34,5 +40,11 @@ public class PeerRepository {
       "INSERT OR REPLACE INTO peers (host, port, last_seen) VALUES (?, ?, ?)",
       peer.host(), peer.port(), peer.lastSeen()
     );
+  }
+
+  // Удаляет неактивного пира из базы данных
+  public void delete(String host, int port) {
+    if (host == null) return;
+    jdbcTemplate.update("DELETE FROM peers WHERE host = ? AND port = ?", host, port);
   }
 }

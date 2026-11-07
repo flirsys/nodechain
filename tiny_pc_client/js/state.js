@@ -187,7 +187,7 @@ const AppState = {
     }
 
     const wallet = {
-      id: 'w_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
+      id: 'w_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
       label: label,
       address: kp.address,
       publicKeyBase64: kp.publicKeyBase64,
@@ -199,7 +199,7 @@ const AppState = {
     this.wallets.push(wallet);
     this.saveWallets();
     await this.setActiveWallet(wallet);
-    this.notify(`Создан новый кошелек: ${wallet.address.substr(0, 10)}...`, 'success');
+    this.notify(`Создан новый кошелек: ${wallet.address.slice(0, 10)}...`, 'success');
     return wallet;
   },
 
@@ -452,16 +452,20 @@ const AppState = {
 
   /**
    * Вычисляет следующий валидный nonce для адреса с учетом очереди мемпула.
-   * Позволяет безопасно отправлять транзакции подряд (pipelining) до включения в блок.
+   * Возвращает null в случае сетевой ошибки, предотвращая конфликтные транзакции.
    */
   async getNextNonce(address) {
-    if (!address) return 0;
+    if (!address) return null;
     const cleanAddr = address.trim().toLowerCase();
 
     let nextNonce = 0;
     const stateRes = await NodeApi.getAddressState(cleanAddr);
     if (stateRes.isOk && stateRes.data && typeof stateRes.data.nonce === 'number') {
       nextNonce = stateRes.data.nonce;
+    } else if (stateRes.status === 404) {
+      nextNonce = 0;
+    } else {
+      return null;
     }
 
     const memRes = await NodeApi.getMempool();
@@ -477,6 +481,48 @@ const AppState = {
     }
 
     return nextNonce;
+  },
+
+  /**
+   * Унифицированная сборка, подпись и отправка транзакции в сеть.
+   */
+  async buildAndSendTx(wallet, to, amountAtoms, feeAtoms, comment = '') {
+    if (!wallet || !wallet.cryptoPrivKey) {
+      return { isOk: false, error: 'Приватный ключ кошелька не готов' };
+    }
+    const cleanTo = (to || '').trim().toLowerCase();
+    if (!CryptoUtil.isValidAddress(cleanTo)) {
+      return { isOk: false, error: 'Некорректный Fox-адрес получателя (64 символа с f,o,x)' };
+    }
+    const cleanFrom = wallet.address.toLowerCase();
+    const chainId = (this.network && this.network.chainId && this.network.chainId !== '-')
+      ? this.network.chainId : 'foxchain-main-1';
+
+    const nonce = await this.getNextNonce(cleanFrom);
+    if (nonce == null) {
+      return { isOk: false, error: 'Не удалось получить nonce адреса из сети' };
+    }
+
+    const cleanComment = (comment || '').trim();
+    const canonical = CryptoUtil.buildCanonicalString(cleanFrom, cleanTo, amountAtoms, feeAtoms, nonce, cleanComment, chainId);
+    const signature = await CryptoUtil.sign(wallet.cryptoPrivKey, canonical);
+    if (!signature) {
+      return { isOk: false, error: 'Ошибка формирования цифровой подписи Ed25519' };
+    }
+
+    const payload = {
+      chainId: chainId,
+      from: cleanFrom,
+      to: cleanTo,
+      amount: amountAtoms,
+      fee: feeAtoms,
+      nonce: nonce,
+      publicKey: wallet.publicKeyBase64,
+      signature: signature,
+      comment: cleanComment || null
+    };
+
+    return await NodeApi.sendTransaction(payload);
   }
 };
 

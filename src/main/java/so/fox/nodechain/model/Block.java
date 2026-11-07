@@ -24,23 +24,25 @@ public class Block implements Serializable {
   public String minerAddress;
   public int txCount;
   public long timestamp;
+  public int difficulty = 4;
   public long nonce;
 
   @JsonSetter(nulls = Nulls.AS_EMPTY)
   public List<Transaction> transactions = new ArrayList<>();
 
-  public record Meta(long height, String hash, String previousHash, String merkleRoot, String minerAddress, int txCount, long timestamp, long nonce) {}
+  public record Meta(long height, String hash, String previousHash, String merkleRoot, String minerAddress, int txCount, long timestamp, int difficulty, long nonce) {}
 
   public Block() {}
 
-  // Конструктор нового блока перед началом майнинга
-  public Block(long height, String previousHash, String minerAddress, List<Transaction> txs) {
+  // Конструктор нового блока перед началом майнинга с заданной сложностью
+  public Block(long height, String previousHash, String minerAddress, List<Transaction> txs, int difficulty) {
     this.height = height;
     this.previousHash = previousHash;
     this.minerAddress = minerAddress != null ? minerAddress : "";
     this.transactions = txs != null ? new ArrayList<>(txs) : new ArrayList<>();
     this.txCount = this.transactions.size();
     this.timestamp = System.currentTimeMillis();
+    this.difficulty = Math.max(1, difficulty);
     this.nonce = 0;
     this.merkleRoot = calculateMerkleRoot();
     this.hash = calculateHash();
@@ -55,29 +57,36 @@ public class Block implements Serializable {
     this.minerAddress = meta.minerAddress() != null ? meta.minerAddress() : "";
     this.txCount = meta.txCount();
     this.timestamp = meta.timestamp();
+    this.difficulty = meta.difficulty() > 0 ? meta.difficulty() : 4;
     this.nonce = meta.nonce();
     this.transactions = new ArrayList<>();
   }
 
-  // Создает Genesis-блок #0 с указанным адресом майнера премайна
-  public static Block createGenesis(String minerAddress) {
+  // Создает Genesis-блок #0 с явным указанием сложности и временной метки
+  public static Block createGenesis(String minerAddress, int difficulty, long timestamp) {
     Block genesis = new Block();
     genesis.height = 0;
     genesis.previousHash = "0";
     genesis.minerAddress = (minerAddress != null && !minerAddress.isBlank()) ? minerAddress : "GENESIS";
     genesis.transactions = Collections.emptyList();
     genesis.txCount = 0;
-    genesis.timestamp = 0;
+    genesis.timestamp = Math.max(0L, timestamp);
+    genesis.difficulty = Math.max(1, difficulty);
     genesis.nonce = 0;
     genesis.merkleRoot = "0";
     genesis.hash = genesis.calculateHash();
     return genesis;
   }
 
+  // Создает Genesis-блок #0 с детерминированным timestamp = 0L
+  public static Block createGenesis(String minerAddress, int difficulty) {
+    return createGenesis(minerAddress, difficulty, 0L);
+  }
+
   // Вычисляет SHA-256 хеш блока по всем полям заголовка
   public String calculateHash() {
     String payload = height + "|" + previousHash + "|" + (merkleRoot != null ? merkleRoot : "") + "|"
-      + (minerAddress != null ? minerAddress : "") + "|" + timestamp + "|" + nonce;
+      + (minerAddress != null ? minerAddress : "") + "|" + timestamp + "|" + difficulty + "|" + nonce;
     return CryptoUtil.sha256Hex(payload);
   }
 
@@ -104,7 +113,9 @@ public class Block implements Serializable {
 
   // Выполняет подбор Proof-of-Work nonce до достижения нужной сложности
   public boolean mineBlock(int difficulty) {
-    String target = "0".repeat(Math.max(0, difficulty));
+    this.difficulty = Math.max(1, difficulty);
+    String target = "0".repeat(this.difficulty);
+    this.hash = calculateHash();
     long start = System.currentTimeMillis();
     while (!this.hash.startsWith(target)) {
       if (Thread.currentThread().isInterrupted()) {
@@ -115,7 +126,7 @@ public class Block implements Serializable {
       this.hash = calculateHash();
     }
     long elapsed = System.currentTimeMillis() - start;
-    log.info("Block mined: height={}, nonce={}, time={}ms", height, nonce, elapsed);
+    log.info("Block mined: height={}, nonce={}, difficulty={}, time={}ms", height, nonce, this.difficulty, elapsed);
     return true;
   }
 

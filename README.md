@@ -140,15 +140,18 @@ flowchart TB
 > **Пример валидного адреса:**
 > `f5ox17c91e0a29b2b2b1cf8813bc30e386abed50e82845bf13c8f8b8a531639d`
 
-### 3. Канонический формат данных для подписи (Анти-Malleability)
-Транзакция подписывается строго по канонической строке (разделитель `|`):
+### 3. Канонический формат данных для подписи (Анти-Malleability & Cross-Chain Replay)
+Транзакция подписывается строго по канонической строке (разделитель `|`) с обязательным указанием `chainId`:
 - Если комментарий пустой или состоит из пробелов:  
-  `from|to|amount|fee|nonce`
+  `chainId|from|to|amount|fee|nonce`
 - Если комментарий есть:  
-  `from|to|amount|fee|nonce|comment.trim()`
+  `chainId|from|to|amount|fee|nonce|comment.trim()`
 
 Хеш транзакции вычисляется от строки:
- `from|to|amount|fee|nonce|comment|signature`
+- Если комментарий пустой:  
+  `chainId|from|to|amount|fee|nonce|signature`
+- Если комментарий есть:  
+  `chainId|from|to|amount|fee|nonce|comment.trim()|signature`
 
 Все адреса перед расчетом хеша и верификацией приводятся к **нижнему регистру (`lowercase`)**, а комментарий триммится по краям, исключая расхождение подписи между нодой и клиентом.
 
@@ -187,6 +190,7 @@ flowchart TB
 |   merkleRoot:    7d2c418e...                                             |
 |   minerAddress:  fox7a1bc...                                             |
 |   timestamp:     1730912400000                                           |
+|   difficulty:    4                                                       |
 |   nonce:         184729                                                  |
 |   hash:          0004bca1... (starts with "0" * difficulty)              |
 +--------------------------------------------------------------------------+
@@ -194,11 +198,16 @@ flowchart TB
 +--------------------------------------------------------------------------+
 ```
 
-### 2. Proof-of-Work (PoW)
+### 2. Proof-of-Work (PoW) и автоподстройка сложности (Bitcoin-style DAA)
 Майнер перебирает поле `nonce` блока до тех пор, пока хеш блока не будет удовлетворять условию сложности:
-- **Block Payload** = `height|previousHash|merkleRoot|minerAddress|timestamp|nonce`
+- **Block Payload** = `height|previousHash|merkleRoot|minerAddress|timestamp|difficulty|nonce`
 - **Block Hash** = `SHA256(Block Payload)`
 - **Valid PoW** - если `Block Hash` начинается с `difficulty` нулей (`00...0`)
+- **Difficulty Adjustment Algorithm (DAA)**: каждые `blockchain.difficulty-adjustment-interval` блоков (по умолчанию 10) сложность пересчитывается на основе разницы времени между текущим блоком и якорным блоком интервала:
+  - Если фактическое время интервала $< \text{targetTime} / 2$, сложность повышается на $+1$ (до `max-difficulty`).
+  - Если фактическое время интервала $> \text{targetTime} \times 2$, сложность снижается на $-1$ (до `min-difficulty`).
+  - Блоки с поддельной сложностью отклоняются сетью (`b.difficulty != expectedDiff`).
+- **Genesis Block**: детерминированный `timestamp = 0L` и базовая сложность консенсуса.
 
 ### 3. Дерево Меркла (RFC 6962 Domain Separation)
 Для защиты от атак второго прообраза (Second Preimage Attacks), при которых внутренний узел дерева выдается за лист транзакции, в хеширование внедрено строгое доменное разделение стандартом RFC 6962:
@@ -377,6 +386,7 @@ CREATE TABLE IF NOT EXISTS blocks (
   miner_address TEXT NOT NULL,
   tx_count INTEGER NOT NULL,
   timestamp INTEGER NOT NULL,
+  difficulty INTEGER NOT NULL DEFAULT 4,
   nonce INTEGER NOT NULL
 );
 
@@ -385,6 +395,7 @@ CREATE TABLE IF NOT EXISTS transactions (
   hash TEXT PRIMARY KEY,
   block_height INTEGER,
   block_hash TEXT,
+  chain_id TEXT,
   tx_from TEXT NOT NULL,
   tx_to TEXT NOT NULL,
   amount INTEGER NOT NULL,
@@ -542,6 +553,7 @@ API работает по умолчанию на порту `8080` с подд�
 * **URL**: `POST /api/v1/transactions/send`
 * **Headers**: `Content-Type: application/json`
 * **Параметры тела запроса**:
+  * `chainId` (*string*, обязательное) — идентификатор блокчейн-сети (например, `"foxchain-main-1"`).
   * `from` (*string*, обязательное) — 64-символьный fox-адрес отправителя.
   * `to` (*string*, обязательное) — 64-символьный fox-адрес получателя (не равен `from`).
   * `amount` (*long*, обязательное) — сумма перевода в атомарных единицах ($> 0$).
@@ -553,6 +565,7 @@ API работает по умолчанию на порту `8080` с подд�
 * **Тело запроса**:
   ```json
   {
+    "chainId": "foxchain-main-1",
     "from": "f5ox17c91e0a29b2b2b1cf8813bc30e386abed50e82845bf13c8f8b8a531639d",
     "to": "8fox32a11b0e29b2b2b1cf8813bc30e386abed50e82845bf13c8f8b8a531639a",
     "amount": 10000,
@@ -578,6 +591,9 @@ API работает по умолчанию на порту `8080` с подд�
   * `400 Bad Request`: `{"code": 400, "message": "Некорректный формат данных в теле запроса"}` (невалидный JSON, несовпадение типов или попытка передать float)
   * `409 Conflict`: `{"code": 409, "message": "Недостаточно средств"}`
   * `409 Conflict`: `{"code": 409, "message": "Конфликт nonce"}`
+  * `409 Conflict`: `{"code": 409, "message": "Транзакция отклонена: неверный chainId"}`
+  * `409 Conflict`: `{"code": 409, "message": "Транзакция отклонена: некорректный nonce"}`
+  * `409 Conflict`: `{"code": 409, "message": "Транзакция отклонена: некорректное время"}`
   * `409 Conflict`: `{"code": 409, "message": "Транзакция отклонена: отправка самому себе"}`
   * `409 Conflict`: `{"code": 409, "message": "Транзакция отклонена: слишком длинный комментарий"}`
   * `409 Conflict`: `{"code": 409, "message": "Транзакция отклонена: некорректная сумма"}` / `"некорректная комиссия"`
@@ -705,7 +721,11 @@ tiny_pc_client/
 | **`node.p2p.port`** | `9090` | TCP-порт для входящих бинарных P2P-подключений. |
 | **`node.db.path`** | `sqlite.db` | Путь к файлу базы данных SQLite. |
 | **`blockchain.chain-id`** | `foxchain-main-1` | Уникальный ID сети (ноды с разными chain-id сбрасывают коннект). |
-| **`blockchain.difficulty`** | `2` | Количество ведущих нулей в PoW-хеше блока (диапазон: 1–32). |
+| **`blockchain.difficulty`** | `4` | Базовая сложность (количество ведущих нулей hex PoW-хеша блока). |
+| **`blockchain.difficulty-adjustment-interval`** | `10` | Интервал ретаргетинга сложности (в блоках, как в Bitcoin). |
+| **`blockchain.target-block-time-seconds`** | `10` | Целевое время нахождения одного блока (в секундах). |
+| **`blockchain.min-difficulty`** | `1` | Минимальная допустимая сложность алгоритма DAA. |
+| **`blockchain.max-difficulty`** | `16` | Максимальная допустимая сложность алгоритма DAA. |
 | **`blockchain.mining-reward`** | `100000000` | Награда майнеру за добытый блок (в атомарных единицах). |
 | **`blockchain.auto-mine`** | `true` | Включение автоматического фонового майнинга при наличии транзакций. |
 | **`blockchain.mine-interval-seconds`**| `10` | Интервал проверки мемпула и попыток майнинга (в секундах). |
@@ -850,18 +870,19 @@ sender_address = "".join(addr_chars).lower()
 print(f"[*] Сгенерирован Fox-адрес: {sender_address}")
 
 # 4. Формирование транзакции
+chain_id = "foxchain-main-1"
 recipient_address = "fox0000000000000000000000000000000000000000000000000000000000000" # валидный получатель
 amount = 10000
 fee = 50
 nonce = 0
 comment = "Привет из Python клиента!"
 
-# Каноническая строка для подписи (комментарий триммится)
+# Каноническая строка для подписи с chainId (защита от Cross-Chain Replay)
 clean_comment = comment.strip() if comment else ""
 canonical = (
-    f"{sender_address}|{recipient_address}|{amount}|{fee}|{nonce}|{clean_comment}"
+    f"{chain_id}|{sender_address}|{recipient_address}|{amount}|{fee}|{nonce}|{clean_comment}"
     if clean_comment
-    else f"{sender_address}|{recipient_address}|{amount}|{fee}|{nonce}"
+    else f"{chain_id}|{sender_address}|{recipient_address}|{amount}|{fee}|{nonce}"
 )
 
 # 5. Подпись Ed25519 (RFC 8032)
@@ -869,6 +890,7 @@ signature_bytes = private_key.sign(canonical.encode("utf-8"))
 sig_b64 = base64.b64encode(signature_bytes).decode("utf-8")
 
 payload = {
+    "chainId": chain_id,
     "from": sender_address,
     "to": recipient_address,
     "amount": amount,
@@ -923,13 +945,25 @@ except urllib.error.HTTPError as e:
 11. **Защита от атак второго прообраза в Merkle Tree (RFC 6962 Domain Separation)**:
     Листья транзакций хешируются с префиксом `00`, а внутренние узлы — с префиксом `01`, исключая подмену промежуточного узла транзакцией.
 12. **Защита генезис-блока и премайна (`adoptPeerGenesisBlock`)**:
-    Чистая нода принимает генезис пира только при строгом соответствии канонической структуре `Block.createGenesis(minerAddress)`, а при явно заданном `blockchain.genesis-address` в конфиге ноды любая подмена генезиса категорически блокируется.
+    Чистая нода принимает генезис пира только при строгом соответствии канонической структуре `Block.createGenesis(minerAddress, difficulty)`, а при явно заданном `blockchain.genesis-address` в конфиге ноды любая подмена генезиса категорически блокируется.
+13. **Bitcoin DAA и расчет ChainWork ($16^{\text{difficulty}}$)**:
+    Автоматическая подстройка сложности майнинга каждые 10 блоков на основе реального времени генерации. Кумулятивная работа цепи рассчитывается как точная сумма $16^{\text{difficulty}}$ каждого блока. Блоки с заниженной или поддельной сложностью блокируются до сохранения.
+14. **Изоляция Chain ID во всех операциях (Cross-Chain Replay Immunity)**:
+    Идентификатор сети (`chainId`) жестко внедрен в канонические строки подписи, расчет хешей транзакций, вызовы REST API и P2P-хэндшейк, предотвращая воспроизведение транзакций в форках или параллельных сетях.
+15. **Динамический расчет статуса `isSynced` по живым сокетам**:
+    Высота каждого пира хранится в объекте `PeerConnection`, а статус синхронизации узла рассчитывается исключительно по живым соединениям. Злоумышленник больше не может вызвать вечный сброс синхронизации отправкой фейковой высоты.
+16. **Защита Reorg от SQLite-нагрузки и лимиты Fast-Sync**:
+    Валидация PoW альтернативной ветки выполняется строго до выборки откатываемых блоков из SQLite. Пакеты `BLOCKS_DATA` ограничены 100 блоками с автоматической пагинацией при начальной синхронизации.
+17. **Защита от отравления истории (Anti-Poisoning)**:
+    Отклонение транзакций с отрицательным `nonce < 0` и аномальными временными метками ($timestamp \le 0$ или $> \text{now} + 600\text{с}$) на раннем этапе до ресурсоемкой проверки подписи Ed25519.
+18. **Защита таблицы пиров (Peer Table Protection)**:
+    Ограничение таблицы `peers` до 256 записей, автоочистка неактивных узлов (> 7 дней) и ограничение пула одновременных попыток исходящих подключений не более 32.
 
 ---
 
 ## 🧪 Тестирование
 
-Кодовая база покрыта строгими интеграционными тестами, проверяющими пограничные случаи, атаки, многопоточный майнинг и распределенный P2P-кластер (всего **73 теста**, проходящих со 100% успехом за ~10 секунд):
+Кодовая база покрыта строгими интеграционными тестами, проверяющими пограничные случаи, атаки, многопоточный майнинг и распределенный P2P-кластер (всего **81 тест**, проходящих со 100% успехом за ~11 секунд):
 
 ```bash
 # Запуск всех тестов проекта
@@ -980,6 +1014,14 @@ mvn test
   * Тест защиты целостности кошелька ноды при повреждении файла `nodewallet.dat`.
   * Математический расчет халвинга награды за блок (Bitcoin Core Halving Algorithm).
   * Защита от вытеснения зависимых транзакций из мемпула (Tail Nonce Rule).
+* `NewPlanSecurityAndDaaTest.java` (8 тестов):
+  * Bitcoin DAA: повышение и понижение сложности в зависимости от темпа генерации блоков.
+  * Точный расчет работы цепи как суммы $16^{\text{difficulty}}$ по блокам.
+  * Отклонение блоков с заниженной, нулевой или поддельной сложностью.
+  * Доменная изоляция `chainId` в канонической подписи и отсечение транзакций чужих сетей.
+  * Каскадный сброс мемпула при обнаружении Nonce Gap.
+  * Защита от OOM при приеме сетевых фреймов с превышением лимита длины.
+  * Отклонение транзакций с отрицательным `nonce` или некорректным `timestamp`.
 * `CryptoUtilTest.java` (2 теста):
   * Корректность генерации, длины (64 символа) и контрольных символов fox-адреса.
   * Валидация цифровых подписей Ed25519 (RFC 8032).
@@ -1046,6 +1088,7 @@ nodechain/
     ├── ConsensusAndSecurityTest.java       # Защита, P2P и правила PoW
     ├── CryptoUtilTest.java                 # Тесты подписей и fox-адресов
     ├── MultiNodeNetworkTest.java           # Тесты кластера из 2-3 нод
+    ├── NewPlanSecurityAndDaaTest.java      # Тесты DAA, ChainWork и Nonce
     └── NodePacketTest.java                 # Тесты бинарного протокола
 ```
 

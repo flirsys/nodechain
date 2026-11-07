@@ -140,15 +140,18 @@ Wallet addresses in NodeChain are **64-character strings** (`[0-9a-fox]{64}`), d
 > **Valid Address Example:**  
 > `f5ox17c91e0a29b2b2b1cf8813bc30e386abed50e82845bf13c8f8b8a531639d`
 
-### 3. Canonical Signing Data Format (Anti-Malleability)
-Transactions are strictly signed over a deterministic canonical string delimited by `|`:
+### 3. Canonical Signing Data Format (Anti-Malleability & Cross-Chain Replay)
+Transactions are strictly signed over a deterministic canonical string delimited by `|` with mandatory `chainId`:
 - If comment is empty or contains only whitespace:  
-  `from|to|amount|fee|nonce`
+  `chainId|from|to|amount|fee|nonce`
 - If comment is present:  
-  `from|to|amount|fee|nonce|comment.trim()`
+  `chainId|from|to|amount|fee|nonce|comment.trim()`
 
 The transaction hash is computed from:  
-`from|to|amount|fee|nonce|comment|signature`
+- If comment is empty:  
+  `chainId|from|to|amount|fee|nonce|signature`
+- If comment is present:  
+  `chainId|from|to|amount|fee|nonce|comment.trim()|signature`
 
 All addresses are normalized to **lowercase** prior to hashing and verification, and comments are trimmed, preventing signature or hash divergence between nodes and clients.
 
@@ -187,6 +190,7 @@ Unlike UTXO (Bitcoin model), NodeChain operates on an **Account-Based state mode
 |   merkleRoot:    7d2c418e...                                             |
 |   minerAddress:  fox7a1bc...                                             |
 |   timestamp:     1730912400000                                           |
+|   difficulty:    4                                                       |
 |   nonce:         184729                                                  |
 |   hash:          0004bca1... (starts with "0" * difficulty)              |
 +--------------------------------------------------------------------------+
@@ -194,11 +198,16 @@ Unlike UTXO (Bitcoin model), NodeChain operates on an **Account-Based state mode
 +--------------------------------------------------------------------------+
 ```
 
-### 2. Proof-of-Work (PoW)
+### 2. Proof-of-Work (PoW) and Difficulty Adjustment (Bitcoin-style DAA)
 The miner increments the block `nonce` until the block hash satisfies difficulty criteria:
-- **Block Payload** = `height|previousHash|merkleRoot|minerAddress|timestamp|nonce`
+- **Block Payload** = `height|previousHash|merkleRoot|minerAddress|timestamp|difficulty|nonce`
 - **Block Hash** = `SHA256(Block Payload)`
 - **Valid PoW** = `Block Hash` begins with `difficulty` leading zeros (`00...0`)
+- **Difficulty Adjustment Algorithm (DAA)**: every `blockchain.difficulty-adjustment-interval` blocks (default: 10), difficulty retargets based on elapsed time between the latest block and the anchor block:
+  - If actual time span $< \text{targetTime} / 2$, difficulty increases by $+1$ (up to `max-difficulty`).
+  - If actual time span $> \text{targetTime} \times 2$, difficulty decreases by $-1$ (down to `min-difficulty`).
+  - Blocks with spoofed or mismatched difficulty are rejected by peers (`b.difficulty != expectedDiff`).
+- **Genesis Block**: deterministic `timestamp = 0L` and base consensus difficulty.
 
 ### 3. Merkle Tree (RFC 6962 Domain Separation)
 To protect against Second Preimage Attacks—where an internal Merkle tree node is submitted as a leaf transaction—the hashing implements strict domain separation in compliance with RFC 6962:
@@ -377,6 +386,7 @@ CREATE TABLE IF NOT EXISTS blocks (
   miner_address TEXT NOT NULL,
   tx_count INTEGER NOT NULL,
   timestamp INTEGER NOT NULL,
+  difficulty INTEGER NOT NULL DEFAULT 4,
   nonce INTEGER NOT NULL
 );
 
@@ -385,6 +395,7 @@ CREATE TABLE IF NOT EXISTS transactions (
   hash TEXT PRIMARY KEY,
   block_height INTEGER,
   block_hash TEXT,
+  chain_id TEXT,
   tx_from TEXT NOT NULL,
   tx_to TEXT NOT NULL,
   amount INTEGER NOT NULL,
@@ -542,6 +553,7 @@ Validates cryptographic signature, sender balance, and sequential nonce, inserts
 * **URL**: `POST /api/v1/transactions/send`
 * **Headers**: `Content-Type: application/json`
 * **Request Body Parameters**:
+  * `chainId` (*string*, required) — blockchain network identifier (e.g. `"foxchain-main-1"`).
   * `from` (*string*, required) — 64-character sender fox address.
   * `to` (*string*, required) — 64-character recipient fox address (must not equal `from`).
   * `amount` (*long*, required) — transfer amount in atomic units ($> 0$).
@@ -553,6 +565,7 @@ Validates cryptographic signature, sender balance, and sequential nonce, inserts
 * **Request Body**:
   ```json
   {
+    "chainId": "foxchain-main-1",
     "from": "f5ox17c91e0a29b2b2b1cf8813bc30e386abed50e82845bf13c8f8b8a531639d",
     "to": "8fox32a11b0e29b2b2b1cf8813bc30e386abed50e82845bf13c8f8b8a531639a",
     "amount": 10000,
@@ -578,6 +591,9 @@ Validates cryptographic signature, sender balance, and sequential nonce, inserts
   * `400 Bad Request`: `{"code": 400, "message": "Некорректный формат данных в теле запроса"}` (invalid JSON, type mismatch, or float value)
   * `409 Conflict`: `{"code": 409, "message": "Недостаточно средств"}`
   * `409 Conflict`: `{"code": 409, "message": "Конфликт nonce"}`
+  * `409 Conflict`: `{"code": 409, "message": "Транзакция отклонена: неверный chainId"}`
+  * `409 Conflict`: `{"code": 409, "message": "Транзакция отклонена: некорректный nonce"}`
+  * `409 Conflict`: `{"code": 409, "message": "Транзакция отклонена: некорректное время"}`
   * `409 Conflict`: `{"code": 409, "message": "Транзакция отклонена: отправка самому себе"}`
   * `409 Conflict`: `{"code": 409, "message": "Транзакция отклонена: слишком длинный комментарий"}`
   * `409 Conflict`: `{"code": 409, "message": "Транзакция отклонена: некорректная сумма"}` / `"некорректная комиссия"`
@@ -705,7 +721,11 @@ NodeChain supports a two-tier configuration hierarchy:
 | **`node.p2p.port`** | `9090` | TCP port for incoming binary P2P connections. |
 | **`node.db.path`** | `sqlite.db` | File path for the SQLite database. |
 | **`blockchain.chain-id`** | `foxchain-main-1` | Unique network ID (peers with different IDs are dropped). |
-| **`blockchain.difficulty`** | `2` | Leading zero count required for block PoW (range: 1–32). |
+| **`blockchain.difficulty`** | `4` | Base difficulty (required leading zeros in block hex PoW hash). |
+| **`blockchain.difficulty-adjustment-interval`** | `10` | Difficulty retargeting interval (in blocks, Bitcoin-style). |
+| **`blockchain.target-block-time-seconds`** | `10` | Target time per block (in seconds). |
+| **`blockchain.min-difficulty`** | `1` | Minimum allowed difficulty for DAA. |
+| **`blockchain.max-difficulty`** | `16` | Maximum allowed difficulty for DAA. |
 | **`blockchain.mining-reward`** | `100000000` | Miner reward for minted block (in atomic units). |
 | **`blockchain.auto-mine`** | `true` | Enables automatic background mining when mempool has txs. |
 | **`blockchain.mine-interval-seconds`**| `10` | Mempool poll and mine attempt interval (in seconds). |
@@ -850,18 +870,19 @@ sender_address = "".join(addr_chars).lower()
 print(f"[*] Generated Fox Address: {sender_address}")
 
 # 4. Build Transaction
+chain_id = "foxchain-main-1"
 recipient_address = "fox0000000000000000000000000000000000000000000000000000000000000" # valid recipient
 amount = 10000
 fee = 50
 nonce = 0
 comment = "Hello from Python Client!"
 
-# Canonical signing string (handles trimmed comment)
+# Canonical signing string with chainId (Cross-Chain Replay protection)
 clean_comment = comment.strip() if comment else ""
 canonical = (
-    f"{sender_address}|{recipient_address}|{amount}|{fee}|{nonce}|{clean_comment}"
+    f"{chain_id}|{sender_address}|{recipient_address}|{amount}|{fee}|{nonce}|{clean_comment}"
     if clean_comment
-    else f"{sender_address}|{recipient_address}|{amount}|{fee}|{nonce}"
+    else f"{chain_id}|{sender_address}|{recipient_address}|{amount}|{fee}|{nonce}"
 )
 
 # 5. Sign with Ed25519 (RFC 8032)
@@ -869,6 +890,7 @@ signature_bytes = private_key.sign(canonical.encode("utf-8"))
 sig_b64 = base64.b64encode(signature_bytes).decode("utf-8")
 
 payload = {
+    "chainId": chain_id,
     "from": sender_address,
     "to": recipient_address,
     "amount": amount,
@@ -923,13 +945,25 @@ NodeChain implements algorithmic defenses against common blockchain attacks:
 11. **Merkle Second-Preimage Collision Defense (RFC 6962 Domain Separation)**:
     Transaction leaves are hashed with prefix `00` (`H_leaf = SHA256("00" + tx.hash)`), and internal nodes with prefix `01` (`H_parent = SHA256("01" + H_left + H_right)`), mathematically preventing intermediate nodes from being presented as leaf transactions.
 12. **Genesis Block & Pre-mine Protection (`adoptPeerGenesisBlock`)**:
-    A clean node accepts a peer's genesis block only if it strictly matches canonical structure `Block.createGenesis(minerAddress)`, and if no custom `blockchain.genesis-address` was specified in the local configuration.
+    A clean node accepts a peer's genesis block only if it strictly matches canonical structure `Block.createGenesis(minerAddress, difficulty)`, and if no custom `blockchain.genesis-address` was specified in the local configuration.
+13. **Bitcoin DAA & Cumulative ChainWork ($16^{\text{difficulty}}$)**:
+    Dynamic difficulty retargeting every 10 blocks according to actual block production intervals. Fork cumulative work is computed as the exact sum of $16^{\text{difficulty}}$ across all blocks in the branch. Blocks carrying forged or mismatched difficulty are blocked before storage.
+14. **Cross-Chain Replay Immunity via Strict Chain ID**:
+    Network identifier (`chainId`) is strictly bound to canonical signature payloads, transaction hash calculations, REST API payloads, and P2P handshakes, preventing cross-chain transaction replay across testnets or parallel networks.
+15. **Dynamic `isSynced` State Computation**:
+    Remote peer heights are tracked per `PeerConnection` instance, and synchronization status evaluates only currently active connections. Handshake height spoofing no longer causes persistent desync state.
+16. **Reorg Pre-Validation & Fast-Sync Pagination**:
+    Branch PoW and headers are verified prior to executing rollback queries against SQLite. `BLOCKS_DATA` frames are limited to 100 blocks with automated pagination during initial chain download.
+17. **Transaction History Anti-Poisoning**:
+    Transactions carrying negative nonces (`nonce < 0`) or abnormal timestamps ($timestamp \le 0$ or $> \text{now} + 600\text{s}$) are rejected in early formatting checks before invoking heavy Ed25519 signature verification.
+18. **Peer Table Protection & Concurrency Ceilings**:
+    The `peers` table is capped at 256 records, stale nodes (> 7 days) are auto-pruned, and outbound connection attempts are restricted to at most 32 concurrent threads.
 
 ---
 
 ## 🧪 Testing
 
-The codebase is covered by comprehensive integration and fuzzing suites (totaling **73 tests** passing with 100% success in ~10 seconds):
+The codebase is covered by comprehensive integration and fuzzing suites (totaling **81 tests** passing with 100% success in ~11 seconds):
 
 ```bash
 # Run all project tests
@@ -980,6 +1014,14 @@ mvn test
   * Wallet file corruption recovery and challenge validation.
   * Bitcoin Core subsidy halving schedule verification.
   * Tail nonce eviction rules in saturated mempools.
+* `NewPlanSecurityAndDaaTest.java` (8 tests):
+  * Bitcoin DAA: difficulty increase/decrease based on block production pace.
+  * Exact cumulative chainwork summation as $\sum 16^{\text{difficulty}}$.
+  * Rejection of spoofed, zero, or understated difficulty blocks.
+  * Chain ID domain separation in canonical signatures and cross-chain isolation.
+  * Cascading mempool eviction on Nonce Gap.
+  * OOM prevention against oversized packet frames.
+  * Early rejection of negative nonces and out-of-bounds timestamps.
 * `CryptoUtilTest.java` (2 tests):
   * Correctness of 64-character fox-address generation and brand character placement.
   * Ed25519 (RFC 8032) signature generation and verification.
@@ -1046,6 +1088,7 @@ nodechain/
     ├── ConsensusAndSecurityTest.java       # Security, P2P, and PoW tests
     ├── CryptoUtilTest.java                 # Crypto and address unit tests
     ├── MultiNodeNetworkTest.java           # Multi-node P2P cluster tests
+    ├── NewPlanSecurityAndDaaTest.java      # DAA, ChainWork, and Nonce tests
     └── NodePacketTest.java                 # Binary protocol framing tests
 ```
 

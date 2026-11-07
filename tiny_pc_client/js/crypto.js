@@ -20,17 +20,21 @@ const CryptoUtil = {
   },
 
   /**
-   * Преобразует строку Base64 в ArrayBuffer.
+   * Преобразует строку Base64 в ArrayBuffer с безопасной обработкой битого формата.
    */
   base64ToArrayBuffer(base64) {
-    if (!base64) return new ArrayBuffer(0);
+    if (!base64 || typeof base64 !== 'string') return null;
     const cleaned = base64.replace(/\s+/g, '');
-    const binary = window.atob(cleaned);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) {
-      bytes[i] = binary.charCodeAt(i);
+    try {
+      const binary = window.atob(cleaned);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      return bytes.buffer;
+    } catch (err) {
+      return null;
     }
-    return bytes.buffer;
   },
 
   /**
@@ -92,6 +96,7 @@ const CryptoUtil = {
     if (!b64) return null;
     try {
       const buf = this.base64ToArrayBuffer(b64);
+      if (!buf) return null;
       return await window.crypto.subtle.importKey(
         'spki',
         buf,
@@ -111,6 +116,7 @@ const CryptoUtil = {
     if (!b64) return null;
     try {
       const buf = this.base64ToArrayBuffer(b64);
+      if (!buf) return null;
       return await window.crypto.subtle.importKey(
         'pkcs8',
         buf,
@@ -197,15 +203,16 @@ const CryptoUtil = {
   },
 
   /**
-   * Формирует каноническую строку для подписи транзакции.
+   * Формирует каноническую строку для подписи транзакции с учетом chainId сети.
    */
-  buildCanonicalString(from, to, amount, fee, nonce, comment) {
+  buildCanonicalString(from, to, amount, fee, nonce, comment, chainId) {
     const f = (from || '').toLowerCase();
     const t = (to || '').toLowerCase();
+    const pChain = chainId ? `${chainId}|` : '';
     if (comment && comment.trim().length > 0) {
-      return `${f}|${t}|${amount}|${fee}|${nonce}|${comment.trim()}`;
+      return `${pChain}${f}|${t}|${amount}|${fee}|${nonce}|${comment.trim()}`;
     }
-    return `${f}|${t}|${amount}|${fee}|${nonce}`;
+    return `${pChain}${f}|${t}|${amount}|${fee}|${nonce}`;
   },
 
   /**

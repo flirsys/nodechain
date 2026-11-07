@@ -6,13 +6,29 @@
 // Вспомогательные функции форматирования
 const Format = {
   toFoxt(atoms) {
-    if (atoms == null) return '0.00000000';
-    return (atoms / 100000000).toFixed(8);
+    if (atoms == null || atoms <= 0) return '0.00000000';
+    const b = BigInt(Math.trunc(atoms));
+    const whole = b / 100000000n;
+    const frac = (b % 100000000n).toString().padStart(8, '0');
+    return `${whole}.${frac}`;
+  },
+
+  // Точный парсинг FOXT в атомы без потери точности IEEE 754 float
+  parseFoxtToAtoms(val) {
+    if (val == null) return null;
+    const str = String(val).trim();
+    if (!str || !/^\d+(\.\d{1,8})?$/.test(str)) return null;
+    const [wholeStr, fracStr = ''] = str.split('.');
+    const whole = BigInt(wholeStr) * 100000000n;
+    const frac = BigInt(fracStr.padEnd(8, '0'));
+    const total = whole + frac;
+    if (total <= 0n || total > 9007199254740991n) return null;
+    return Number(total);
   },
 
   shortHash(hash, left = 8, right = 8) {
     if (!hash || hash.length <= (left + right)) return hash || '';
-    return `${hash.substr(0, left)}...${hash.substr(-right)}`;
+    return `${hash.slice(0, left)}...${hash.slice(-right)}`;
   },
 
   date(timestamp) {
@@ -30,12 +46,9 @@ const Format = {
 
   async copyText(text, label = 'Скопировано') {
     if (!text) return;
-    try {
-      await navigator.clipboard.writeText(text);
-      AppState.notify(`${label} в буфер обмена`, 'success');
-    } catch (err) {
-      AppState.notify('Ошибка копирования', 'error');
-    }
+    navigator.clipboard.writeText(text)
+      .then(() => AppState.notify(`${label} в буфер обмена`, 'success'))
+      .catch(() => AppState.notify('Ошибка копирования', 'error'));
   }
 };
 
@@ -137,40 +150,17 @@ const WalletView = {
       return;
     }
 
-    const amountAtoms = Math.round(parseFloat(f.amountFoxt || '0') * 100000000);
-    if (isNaN(amountAtoms) || amountAtoms <= 0) {
-      AppState.notify('Укажите корректную сумму отправки', 'error');
+    const amountAtoms = Format.parseFoxtToAtoms(f.amountFoxt);
+    if (!amountAtoms) {
+      AppState.notify('Укажите корректную сумму отправки (число до 8 знаков после запятой)', 'error');
       return;
     }
 
     const feeAtoms = parseInt(f.fee, 10) || 50;
-    const fromAddr = AppState.activeWallet.address.toLowerCase();
-
     f.isSending = true;
     m.redraw();
 
-    const nonce = await AppState.getNextNonce(fromAddr);
-    const canonical = CryptoUtil.buildCanonicalString(fromAddr, cleanTo, amountAtoms, feeAtoms, nonce, f.comment);
-    const signature = await CryptoUtil.sign(AppState.activeWallet.cryptoPrivKey, canonical);
-    if (!signature) {
-      AppState.notify('Ошибка формирования цифровой подписи', 'error');
-      f.isSending = false;
-      m.redraw();
-      return;
-    }
-
-    const payload = {
-      from: fromAddr,
-      to: cleanTo,
-      amount: amountAtoms,
-      fee: feeAtoms,
-      nonce: nonce,
-      publicKey: AppState.activeWallet.publicKeyBase64,
-      signature: signature,
-      comment: f.comment.trim() || null
-    };
-
-    const res = await NodeApi.sendTransaction(payload);
+    const res = await AppState.buildAndSendTx(AppState.activeWallet, cleanTo, amountAtoms, feeAtoms, f.comment);
     f.isSending = false;
 
     if (res.isOk) {
@@ -285,7 +275,7 @@ const WalletView = {
                   onclick: (e) => {
                     e.preventDefault();
                     const maxAtoms = Math.max(0, acc.unconfirmedBalance - f.fee);
-                    f.amountFoxt = (maxAtoms / 100000000).toString();
+                    f.amountFoxt = Format.toFoxt(maxAtoms);
                   }
                 }, 'Все (MAX)')
               ]),
@@ -690,37 +680,17 @@ const DevView = {
       return;
     }
 
-    const amountAtoms = Math.round(parseFloat(dev.faucetAmount || '1') * 100000000);
+    const amountAtoms = Format.parseFoxtToAtoms(dev.faucetAmount || '1');
+    if (!amountAtoms) {
+      AppState.notify('Укажите корректную сумму крана', 'error');
+      return;
+    }
     const feeAtoms = parseInt(dev.faucetFee, 10) || 50;
 
     dev.isProcessing = true;
     m.redraw();
 
-    // Обновляем текущий nonce майнера с учетом очереди мемпула (pipelining)
-    const nonce = await AppState.getNextNonce(dev.minerWallet.address);
-
-    const canonical = CryptoUtil.buildCanonicalString(dev.minerWallet.address, targetAddr, amountAtoms, feeAtoms, nonce, 'Dev Faucet Drop');
-    const signature = await CryptoUtil.sign(dev.minerWallet.cryptoPrivKey, canonical);
-
-    if (!signature) {
-      AppState.notify('Ошибка подписи крана', 'error');
-      dev.isProcessing = false;
-      m.redraw();
-      return;
-    }
-
-    const payload = {
-      from: dev.minerWallet.address,
-      to: targetAddr,
-      amount: amountAtoms,
-      fee: feeAtoms,
-      nonce: nonce,
-      publicKey: dev.minerWallet.publicKeyBase64,
-      signature: signature,
-      comment: 'Dev Faucet Drop'
-    };
-
-    const sendRes = await NodeApi.sendTransaction(payload);
+    const sendRes = await AppState.buildAndSendTx(dev.minerWallet, targetAddr, amountAtoms, feeAtoms, 'Dev Faucet Drop');
     dev.isProcessing = false;
 
     if (sendRes.isOk) {
@@ -739,17 +709,29 @@ const DevView = {
       AppState.notify('Сначала загрузите кошелек майнера/крана', 'error');
       return;
     }
+    if (!AppState.activeWallet || !AppState.activeWallet.address) {
+      AppState.notify('Сначала выберите или создайте активный кошелек получателя', 'error');
+      return;
+    }
     const minerAddr = AppState.dev.minerWallet.address;
     const recipient = AppState.activeWallet.address;
     let curNonce = await AppState.getNextNonce(minerAddr);
+    if (curNonce == null) {
+      AppState.notify('Не удалось определить nonce майнера', 'error');
+      return;
+    }
 
     AppState.notify(`Генерация ${count} транзакций с последовательным nonce...`, 'info');
 
+    const chainId = (AppState.network && AppState.network.chainId && AppState.network.chainId !== '-')
+      ? AppState.network.chainId : 'foxchain-main-1';
+
     for (let i = 0; i < count; i++) {
-      const canonical = CryptoUtil.buildCanonicalString(minerAddr, recipient, 1000, 50, curNonce, `Batch Test #${i + 1}`);
+      const canonical = CryptoUtil.buildCanonicalString(minerAddr, recipient, 1000, 50, curNonce, `Batch Test #${i + 1}`, chainId);
       const sig = await CryptoUtil.sign(AppState.dev.minerWallet.cryptoPrivKey, canonical);
       if (!sig) continue;
       await NodeApi.sendTransaction({
+        chainId: chainId,
         from: minerAddr,
         to: recipient,
         amount: 1000,

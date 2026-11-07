@@ -20,6 +20,7 @@ public class TransactionRepository {
     long blockHeight = rs.getLong("block_height");
     tx.blockHeight = rs.wasNull() ? null : blockHeight;
     tx.blockHash = rs.getString("block_hash");
+    tx.chainId = rs.getString("chain_id");
     tx.from = rs.getString("tx_from");
     tx.to = rs.getString("tx_to");
     tx.amount = rs.getLong("amount");
@@ -30,9 +31,7 @@ public class TransactionRepository {
     tx.comment = rs.getString("comment");
     tx.timestamp = rs.getLong("timestamp");
     tx.status = rs.getString("status");
-    try {
-      tx.txIndex = rs.getInt("tx_index");
-    } catch (Exception ignored) {}
+    tx.txIndex = rs.getInt("tx_index");
     return tx;
   };
 
@@ -44,10 +43,10 @@ public class TransactionRepository {
   public void save(Transaction tx) {
     if (tx == null) return;
     jdbcTemplate.update("""
-      INSERT OR REPLACE INTO transactions (hash, block_height, block_hash, tx_from, tx_to,
+      INSERT OR REPLACE INTO transactions (hash, block_height, block_hash, chain_id, tx_from, tx_to,
         amount, fee, nonce, public_key, signature, comment, timestamp, status, tx_index)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, tx.hash, tx.blockHeight, tx.blockHash, tx.from, tx.to,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, tx.hash, tx.blockHeight, tx.blockHash, tx.chainId, tx.from, tx.to,
       tx.amount, tx.fee, tx.nonce, tx.publicKey, tx.signature,
       tx.comment, tx.timestamp, tx.status, tx.txIndex);
   }

@@ -18,6 +18,7 @@ public class PeerConnection implements Runnable {
 
   public final Socket socket;
   public final P2pClientManager manager;
+  public final boolean isOutbound;
   public final AtomicBoolean isRunning = new AtomicBoolean(true);
 
   private final InputStream in;
@@ -25,14 +26,21 @@ public class PeerConnection implements Runnable {
 
   public String remoteNodeId;
   public int remotePort;
+  public volatile long remoteHeight;
 
-  // Создает соединение с пиром с буферизированными потоками ввода/вывода
-  public PeerConnection(Socket socket, P2pClientManager manager) throws IOException {
+  // Создает соединение с пиром с явным указанием направления подключения (исходящее/входящее)
+  public PeerConnection(Socket socket, P2pClientManager manager, boolean isOutbound) throws IOException {
     this.socket = socket;
     this.socket.setSoTimeout(45000);
     this.manager = manager;
+    this.isOutbound = isOutbound;
     this.in = new BufferedInputStream(socket.getInputStream());
     this.out = new BufferedOutputStream(socket.getOutputStream());
+  }
+
+  // Создает входящее соединение с пиром по умолчанию
+  public PeerConnection(Socket socket, P2pClientManager manager) throws IOException {
+    this(socket, manager, false);
   }
 
   // Основной цикл чтения входящих сетевых пакетов из сокета

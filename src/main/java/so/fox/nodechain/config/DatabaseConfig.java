@@ -61,15 +61,21 @@ public class DatabaseConfig {
         miner_address TEXT NOT NULL,
         tx_count INTEGER NOT NULL,
         timestamp INTEGER NOT NULL,
+        difficulty INTEGER NOT NULL DEFAULT 4,
         nonce INTEGER NOT NULL
       );
     """);
+
+    try {
+      jdbc.execute("ALTER TABLE blocks ADD COLUMN difficulty INTEGER NOT NULL DEFAULT 4;");
+    } catch (Exception ignored) {}
 
     jdbc.execute("""
       CREATE TABLE IF NOT EXISTS transactions (
         hash TEXT PRIMARY KEY,
         block_height INTEGER,
         block_hash TEXT,
+        chain_id TEXT,
         tx_from TEXT NOT NULL,
         tx_to TEXT NOT NULL,
         amount INTEGER NOT NULL,
@@ -83,6 +89,10 @@ public class DatabaseConfig {
         tx_index INTEGER DEFAULT 0
       );
     """);
+
+    try {
+      jdbc.execute("ALTER TABLE transactions ADD COLUMN chain_id TEXT;");
+    } catch (Exception ignored) {}
     jdbc.execute("CREATE INDEX IF NOT EXISTS idx_tx_from ON transactions(tx_from);");
     jdbc.execute("CREATE INDEX IF NOT EXISTS idx_tx_to ON transactions(tx_to);");
     jdbc.execute("CREATE INDEX IF NOT EXISTS idx_tx_block_height ON transactions(block_height);");

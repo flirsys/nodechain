@@ -20,8 +20,20 @@ public class NodeConfig {
   @Value("${blockchain.chain-id:foxchain-main-1}")
   public String chainId;
 
-  @Value("${blockchain.difficulty:2}")
-  public int difficulty;
+  @Value("${blockchain.difficulty:4}")
+  public int difficulty = 4;
+
+  @Value("${blockchain.difficulty-adjustment-interval:10}")
+  public int difficultyAdjustmentInterval = 10;
+
+  @Value("${blockchain.target-block-time-seconds:10}")
+  public int targetBlockTimeSeconds = 10;
+
+  @Value("${blockchain.min-difficulty:1}")
+  public int minDifficulty = 1;
+
+  @Value("${blockchain.max-difficulty:16}")
+  public int maxDifficulty = 16;
 
   @Value("${blockchain.mining-reward:100000000}")
   public long miningReward;
@@ -70,6 +82,12 @@ public class NodeConfig {
     }
     if (halvingInterval <= 0) {
       throw new IllegalStateException("Параметр blockchain.halving-interval должен быть больше 0: " + halvingInterval);
+    }
+    if (minDifficulty < 1 || maxDifficulty > 32 || minDifficulty > maxDifficulty) {
+      throw new IllegalStateException("Некорректные границы min/max difficulty");
+    }
+    if (targetBlockTimeSeconds <= 0) {
+      throw new IllegalStateException("Параметр blockchain.target-block-time-seconds должен быть больше 0");
     }
   }
 }

@@ -250,7 +250,7 @@ public class MultiNodeNetworkTest {
 
     // Формируем фальшивый блок: неверный Proof of Work (начинается с "f", а не с нулей "00")
     Block latest = nodeHonest1.blockchain.getLatestBlockHeader();
-    Block fakeBlock = new Block(latest.height + 1, latest.hash, "f5ox000000000000000000000000000000000000000000000000000000000000", Collections.emptyList());
+    Block fakeBlock = new Block(latest.height + 1, latest.hash, "f5ox000000000000000000000000000000000000000000000000000000000000", Collections.emptyList(), 2);
     fakeBlock.hash = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
 
     // Отправляем фальшивый блок на Node 1
@@ -430,13 +430,16 @@ public class MultiNodeNetworkTest {
 
   private static Transaction createSignedTransaction(
       KeyPair senderKey, String to, long amount, long fee, long nonce, String comment) {
+    return createSignedTransaction("foxchain-main-1", senderKey, to, amount, fee, nonce, comment);
+  }
+
+  private static Transaction createSignedTransaction(
+      String chainId, KeyPair senderKey, String to, long amount, long fee, long nonce, String comment) {
     String from = CryptoUtil.getAddressFromPublicKey(senderKey.getPublic());
     String pubKey = CryptoUtil.encodePublicKey(senderKey.getPublic());
-    String canonical = (comment != null && !comment.isEmpty())
-      ? from + "|" + to + "|" + amount + "|" + fee + "|" + nonce + "|" + comment
-      : from + "|" + to + "|" + amount + "|" + fee + "|" + nonce;
+    String canonical = Transaction.buildCanonicalData(chainId, from, to, amount, fee, nonce, comment);
     String sig = CryptoUtil.sign(senderKey.getPrivate(), canonical);
-    return new Transaction(from, to, amount, fee, nonce, pubKey, sig, comment);
+    return new Transaction(chainId, from, to, amount, fee, nonce, pubKey, sig, comment);
   }
 
   /**

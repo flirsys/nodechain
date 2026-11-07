@@ -13,7 +13,7 @@ public final class ConsensusUtil {
 
   private ConsensusUtil() {}
 
-  // Проверяет заголовок блока с явным указанием верхнего лимита времени
+  // Проверяет заголовок блока с явным указанием сложности и верхнего лимита времени
   public static boolean isValidBlockHeader(Block prev, Block next, int difficulty, long maxTime) {
     if (next == null || prev == null) return false;
     if (next.height != prev.height + 1) return false;
@@ -21,10 +21,35 @@ public final class ConsensusUtil {
     if (next.timestamp < prev.timestamp || next.timestamp > maxTime) return false;
     if (next.height > 0 && !CryptoUtil.isValidAddress(next.minerAddress)) return false;
     if (next.transactions == null || next.txCount != next.transactions.size()) return false;
+    if (next.difficulty != difficulty) return false;
     if (next.hash == null || !isValidProofOfWork(next.hash, difficulty)) return false;
     if (!next.hash.equals(next.calculateHash())) return false;
     if (next.merkleRoot == null || !next.merkleRoot.equals(next.calculateMerkleRoot())) return false;
     return true;
+  }
+
+  // Вычисляет ожидаемую сложность следующего блока (Bitcoin-style Difficulty Adjustment)
+  public static int calculateNextDifficulty(Block prev, Block intervalAnchor, so.fox.nodechain.config.NodeConfig config) {
+    if (prev == null || prev.height == 0) return config.difficulty;
+    int interval = config.difficultyAdjustmentInterval;
+    long nextHeight = prev.height + 1;
+    if (interval <= 0 || nextHeight % interval != 0) {
+      return prev.difficulty > 0 ? prev.difficulty : config.difficulty;
+    }
+    if (intervalAnchor == null) return prev.difficulty > 0 ? prev.difficulty : config.difficulty;
+
+    long targetTimeSpan = (long) interval * config.targetBlockTimeSeconds * 1000L;
+    long anchorTime = (intervalAnchor.timestamp > 0) ? intervalAnchor.timestamp : (prev.timestamp - targetTimeSpan);
+    long actualTimeSpan = Math.max(1L, prev.timestamp - anchorTime);
+
+    int currentDiff = prev.difficulty > 0 ? prev.difficulty : config.difficulty;
+    if (actualTimeSpan < targetTimeSpan / 2) {
+      return Math.min(config.maxDifficulty, currentDiff + 1);
+    }
+    if (actualTimeSpan > targetTimeSpan * 2) {
+      return Math.max(config.minDifficulty, currentDiff - 1);
+    }
+    return currentDiff;
   }
 
   // Проверяет соответствие хеша блока заданной сложности PoW
@@ -44,16 +69,23 @@ public final class ConsensusUtil {
     if (tx.amount <= 0) return Result.fail(409, "Транзакция отклонена: некорректная сумма");
     if (tx.fee < 0) return Result.fail(409, "Транзакция отклонена: некорректная комиссия");
     if (tx.amount > Long.MAX_VALUE - tx.fee) return Result.fail(409, "Транзакция отклонена: переполнение суммы и комиссии");
+    if (tx.nonce < 0) return Result.fail(409, "Транзакция отклонена: некорректный nonce");
+    if (tx.timestamp <= 0 || tx.timestamp > System.currentTimeMillis() + 600_000L) {
+      return Result.fail(409, "Транзакция отклонена: некорректное время");
+    }
     if (tx.comment != null && tx.comment.length() > 256) return Result.fail(409, "Транзакция отклонена: слишком длинный комментарий");
     if (tx.hash == null || !tx.hash.equals(tx.calculateHash())) return Result.fail(409, "Транзакция отклонена: неверный хеш");
     return Result.ok(null);
   }
 
-  // Проверяет базовую корректность полей и цифровой подписи транзакции
-  public static Result<Void> validateTransactionBasics(Transaction tx) {
+  // Проверяет базовую корректность полей и цифровой подписи транзакции строго с учетом chainId
+  public static Result<Void> validateTransactionBasics(Transaction tx, String expectedChainId) {
     Result<Void> formatRes = validateTransactionFormat(tx);
     if (formatRes.isError()) return formatRes;
-    if (!tx.isSignatureValid()) return Result.fail(400, "Подпись не верна");
+    if (expectedChainId == null || expectedChainId.isBlank() || tx.chainId == null || !expectedChainId.equals(tx.chainId)) {
+      return Result.fail(409, "Транзакция отклонена: неверный chainId");
+    }
+    if (!tx.isSignatureValid(expectedChainId)) return Result.fail(400, "Подпись не верна");
     return Result.ok(null);
   }
 
@@ -67,21 +99,22 @@ public final class ConsensusUtil {
     return true;
   }
 
-  // Вычисляет кумулятивную работу PoW для списка блоков
-  public static BigInteger calculateChainWork(List<Block> blocks, int defaultDifficulty) {
-    if (blocks == null || blocks.isEmpty()) return BigInteger.ZERO;
-    int count = 0;
-    for (Block b : blocks) {
-      if (b != null) count++;
-    }
-    return calculateChainWork(count, defaultDifficulty);
+  // Вычисляет PoW-работу для одного блока: 16^difficulty
+  public static BigInteger calculateBlockWork(int difficulty) {
+    if (difficulty <= 0) return BigInteger.ONE;
+    return BigInteger.valueOf(16).pow(difficulty);
   }
 
-  // Вычисляет кумулятивную работу PoW для указанного числа блоков и сложности
-  public static BigInteger calculateChainWork(int blockCount, int difficulty) {
-    if (blockCount <= 0) return BigInteger.ZERO;
-    BigInteger singleBlockWork = BigInteger.valueOf(16).pow(Math.max(1, difficulty));
-    return singleBlockWork.multiply(BigInteger.valueOf(blockCount));
+  // Вычисляет кумулятивную работу PoW для списка блоков как сумму 16^b.difficulty каждого блока
+  public static BigInteger calculateChainWork(List<Block> blocks, int defaultDifficulty) {
+    if (blocks == null || blocks.isEmpty()) return BigInteger.ZERO;
+    BigInteger total = BigInteger.ZERO;
+    for (Block b : blocks) {
+      if (b == null) continue;
+      int diff = b.difficulty > 0 ? b.difficulty : defaultDifficulty;
+      total = total.add(calculateBlockWork(diff));
+    }
+    return total;
   }
 
   // Вычисляет награду за блок по алгоритму халвинга (Bitcoin Subsidy Halving)
@@ -92,4 +125,3 @@ public final class ConsensusUtil {
     return initialReward >> (int) halvings;
   }
 }
-

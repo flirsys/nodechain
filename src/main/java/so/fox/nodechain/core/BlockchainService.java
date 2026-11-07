@@ -7,9 +7,11 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -125,7 +127,7 @@ public class BlockchainService {
   public Block getLatestBlockHeader() {
     Block cached = cachedLatestBlock.get();
     if (cached != null) return cached;
-    Block latest = blockRepository.findLatestBlock().orElseGet(() -> Block.createGenesis(resolveGenesisAddress()));
+    Block latest = blockRepository.findLatestBlock().orElseGet(() -> Block.createGenesis(resolveGenesisAddress(), nodeConfig.difficulty));
     cachedLatestBlock.set(latest);
     return latest;
   }
@@ -188,7 +190,7 @@ public class BlockchainService {
   // Принимает и валидирует входящую транзакцию для mempool
   public Result<Transaction> submitTransaction(Transaction tx, boolean isBroadcast) {
     if (tx.hash == null || tx.hash.isEmpty()) tx.hash = tx.calculateHash();
-    Result<Void> validation = ConsensusUtil.validateTransactionBasics(tx);
+    Result<Void> validation = ConsensusUtil.validateTransactionBasics(tx, nodeConfig.chainId);
     if (validation.isError()) return Result.fail(validation.status, validation.error);
 
     synchronized (chainLock) {
@@ -197,10 +199,14 @@ public class BlockchainService {
       if (isNonceInMempool) return Result.fail(409, "Конфликт nonce");
       Account sender = getAccount(tx.from);
       long expectedNonce = sender.nonce;
-      for (Transaction m : mempool.values()) {
-        if (m.from.equalsIgnoreCase(tx.from)) {
-          expectedNonce = Math.max(expectedNonce, m.nonce + 1);
-        }
+      List<Transaction> senderTxs = mempool.values().stream()
+        .filter(m -> m.from.equalsIgnoreCase(tx.from))
+        .sorted(Comparator.comparingLong(m -> m.nonce))
+        .toList();
+
+      for (Transaction m : senderTxs) {
+        if (m.nonce != expectedNonce) break;
+        expectedNonce++;
       }
       if (tx.nonce != expectedNonce) return Result.fail(409, "Конфликт nonce");
       long unconfirmed = calculateUnconfirmedBalance(tx.from);
@@ -226,30 +232,52 @@ public class BlockchainService {
       log.warn("Mining already in progress, skipping concurrent attempt");
       return null;
     }
+    Block committedBlock = null;
     try {
       List<Transaction> validTxs;
       Block latest;
       String minerAddr;
+      int targetDiff;
 
       synchronized (chainLock) {
         validTxs = selectValidTransactions();
         latest = getLatestBlockHeader();
         minerAddr = nodeWalletService.address;
+        targetDiff = getNextBlockDifficulty(latest);
       }
 
-      Block newBlock = new Block(latest.height + 1, latest.hash, minerAddr, validTxs);
-      boolean isMined = newBlock.mineBlock(nodeConfig.difficulty);
+      Block newBlock = new Block(latest.height + 1, latest.hash, minerAddr, validTxs, targetDiff);
+      boolean isMined = newBlock.mineBlock(targetDiff);
       if (!isMined) {
         log.warn("Mining interrupted or aborted for block #{}", newBlock.height);
         return null;
       }
 
       synchronized (chainLock) {
-        return commitMinedBlock(newBlock, validTxs);
+        committedBlock = commitMinedBlock(newBlock, validTxs);
       }
     } finally {
       isMining.set(false);
     }
+
+    // Рассылку смайненного блока выполняем асинхронно вне лока глобального состояния
+    if (committedBlock != null && p2pClientManager != null) {
+      p2pClientManager.broadcast(OpCode.NEW_BLOCK_ANNOUNCE, committedBlock, null);
+    }
+    return committedBlock;
+  }
+
+  // Вычисляет сложность следующего блока на основе текущей вершины и интервала ретаргета
+  public int getNextBlockDifficulty(Block latest) {
+    if (latest == null || latest.height == 0) return nodeConfig.difficulty;
+    int interval = nodeConfig.difficultyAdjustmentInterval;
+    long nextHeight = latest.height + 1;
+    if (interval <= 0 || nextHeight % interval != 0) {
+      return latest.difficulty > 0 ? latest.difficulty : nodeConfig.difficulty;
+    }
+    long anchorHeight = Math.max(0, nextHeight - interval);
+    Optional<Block> anchor = blockRepository.findByHeight(anchorHeight);
+    return ConsensusUtil.calculateNextDifficulty(latest, anchor.orElse(null), nodeConfig);
   }
 
   // Валидирует и транзакционно применяет входящий блок от пира к цепочке
@@ -259,7 +287,12 @@ public class BlockchainService {
       if (blockRepository.findByHash(b.hash).isPresent()) return true;
       Block latest = getLatestBlockHeader();
       long maxTime = System.currentTimeMillis() + 600_000L;
-      if (!ConsensusUtil.isValidBlockHeader(latest, b, nodeConfig.difficulty, maxTime)) return false;
+      int expectedDiff = getNextBlockDifficulty(latest);
+      if (b.difficulty != expectedDiff) {
+        log.warn("Rejected incoming block #{}: difficulty mismatch (expected {}, got {})", b.height, expectedDiff, b.difficulty);
+        return false;
+      }
+      if (!ConsensusUtil.isValidBlockHeader(latest, b, expectedDiff, maxTime)) return false;
       Map<String, Account> state = new HashMap<>();
       ApplyBlockContext ctx = new ApplyBlockContext(b, false, null);
       if (!applyBlockToSimState(ctx, state)) return false;
@@ -288,12 +321,13 @@ public class BlockchainService {
         return false;
       }
       Block newLatest = branch.get(branch.size() - 1);
+      long maxTime = System.currentTimeMillis() + 600_000L;
+      if (!validateBranch(branch, ancestor, maxTime)) return false;
+
       List<Block> rollback = collectRollbackBlocks(currentLatest.height, ancestor.height);
       BigInteger curWork = ConsensusUtil.calculateChainWork(rollback, nodeConfig.difficulty);
       BigInteger branchWork = ConsensusUtil.calculateChainWork(branch, nodeConfig.difficulty);
       if (branchWork.compareTo(curWork) <= 0) return false;
-      long maxTime = System.currentTimeMillis() + 600_000L;
-      if (!validateBranch(branch, ancestor, maxTime)) return false;
       Map<String, Account> state = new HashMap<>();
       if (!simulateReorg(rollback, branch, state, ancestor.height)) return false;
       ReorgContext ctx = new ReorgContext(ancestor, newLatest, rollback, branch);
@@ -368,7 +402,7 @@ public class BlockchainService {
   }
 
   private boolean isRestoredTxValid(Transaction tx, Map<String, Long> expectedNonces, Map<String, Long> tempBalances) {
-    Result<Void> valRes = ConsensusUtil.validateTransactionBasics(tx);
+    Result<Void> valRes = ConsensusUtil.validateTransactionBasics(tx, nodeConfig.chainId);
     if (valRes.isError()) return false;
     Account sender = getAccount(tx.from);
     long expNonce = expectedNonces.computeIfAbsent(tx.from, k -> sender.nonce);
@@ -400,7 +434,8 @@ public class BlockchainService {
   // Принимает генезис-блок удаленного пира при первой синхронизации чистой ноды
   public boolean adoptPeerGenesisBlock(Block remoteGenesis) {
     if (remoteGenesis == null || !CryptoUtil.isValidAddress(remoteGenesis.minerAddress)) return false;
-    Block expected = Block.createGenesis(remoteGenesis.minerAddress);
+    int expectedDiff = remoteGenesis.difficulty > 0 ? remoteGenesis.difficulty : nodeConfig.difficulty;
+    Block expected = Block.createGenesis(remoteGenesis.minerAddress, expectedDiff, remoteGenesis.timestamp);
     if (!expected.hash.equals(remoteGenesis.hash) || remoteGenesis.txCount != 0
         || (remoteGenesis.transactions != null && !remoteGenesis.transactions.isEmpty())) return false;
     synchronized (chainLock) {
@@ -430,6 +465,62 @@ public class BlockchainService {
     }
   }
 
+  // Принимает цепочку блоков от удаленного пира при первой синхронизации чистой ноды с валидацией PoW
+  public boolean adoptPeerGenesisChain(List<Block> blocks) {
+    if (blocks == null || blocks.size() < 2) return false;
+    Block remoteGenesis = blocks.get(0);
+    if (remoteGenesis == null || remoteGenesis.height != 0 || !CryptoUtil.isValidAddress(remoteGenesis.minerAddress)) return false;
+    if (remoteGenesis.difficulty != nodeConfig.difficulty || remoteGenesis.txCount != 0) return false;
+    if (remoteGenesis.transactions != null && !remoteGenesis.transactions.isEmpty()) return false;
+
+    synchronized (chainLock) {
+      Block current = getLatestBlockHeader();
+      if (current.height > 0) return false;
+      if (nodeConfig.genesisAddress != null && !nodeConfig.genesisAddress.isBlank()
+          && !remoteGenesis.minerAddress.equalsIgnoreCase(nodeConfig.genesisAddress.trim())) {
+        return false;
+      }
+
+      Block expected = Block.createGenesis(remoteGenesis.minerAddress, nodeConfig.difficulty, remoteGenesis.timestamp);
+      if (!expected.hash.equals(remoteGenesis.hash)) return false;
+
+      long maxTime = System.currentTimeMillis() + 600_000L;
+      List<Block> branch = blocks.subList(1, blocks.size());
+      if (!validateBranch(branch, remoteGenesis, maxTime)) return false;
+
+      Map<String, Account> state = new HashMap<>();
+      String oldLocalAddr = resolveGenesisAddress();
+      if (!oldLocalAddr.isEmpty() && !oldLocalAddr.equalsIgnoreCase(remoteGenesis.minerAddress)) {
+        state.put(oldLocalAddr, new Account(oldLocalAddr, 0, 0));
+      }
+      if (nodeConfig.genesisAllocation > 0) {
+        String remAddr = remoteGenesis.minerAddress.toLowerCase();
+        state.put(remAddr, new Account(remAddr, nodeConfig.genesisAllocation, 0));
+      }
+
+      for (Block b : branch) {
+        if (!applyBlockToSimState(new ApplyBlockContext(b, false, 0L), state)) return false;
+      }
+
+      Boolean isOk = txTemplate.execute(status -> {
+        blockRepository.deleteBlocksGreaterThan(-1);
+        blockRepository.save(remoteGenesis);
+        state.values().forEach(accountRepository::saveOrUpdate);
+        branch.forEach(this::persistConfirmedBlock);
+        return true;
+      });
+      if (!Boolean.TRUE.equals(isOk)) return false;
+
+      cachedLatestBlock.set(branch.get(branch.size() - 1));
+      for (Block b : branch) {
+        if (b.transactions != null) b.transactions.forEach(tx -> mempool.remove(tx.hash));
+      }
+      cleanupStaleMempool();
+      log.info("Adopted peer genesis and chain up to height {}", cachedLatestBlock.get().height);
+      return true;
+    }
+  }
+
   private String resolveGenesisAddress() {
     if (nodeConfig.genesisAddress != null && !nodeConfig.genesisAddress.isBlank()) {
       return nodeConfig.genesisAddress.trim().toLowerCase();
@@ -440,7 +531,7 @@ public class BlockchainService {
 
   private void createGenesisBlock() {
     String minerAddr = resolveGenesisAddress();
-    Block genesis = Block.createGenesis(minerAddr);
+    Block genesis = Block.createGenesis(minerAddr, nodeConfig.difficulty, 0L);
     blockRepository.save(genesis);
     cachedLatestBlock.set(genesis);
     log.info("Genesis block initialized: {} (miner: {})", genesis.hash, genesis.minerAddress);
@@ -486,7 +577,7 @@ public class BlockchainService {
 
   private boolean isTxStateTransitionValid(Transaction tx, ApplyBlockContext ctx, Map<String, Account> state) {
     if (!ctx.isRollback()) {
-      Result<Void> valRes = ConsensusUtil.validateTransactionBasics(tx);
+      Result<Void> valRes = ConsensusUtil.validateTransactionBasics(tx, nodeConfig.chainId);
       if (valRes.isError()) return false;
       if (isTxAlreadyConfirmed(tx.hash, ctx.ancestorHeight())) return false;
     }
@@ -573,27 +664,53 @@ public class BlockchainService {
   }
 
   private void cleanupStaleMempool() {
-    List<String> toRemove = new ArrayList<>();
+    Map<String, List<Transaction>> bySender = new HashMap<>();
     for (Transaction tx : mempool.values()) {
-      Optional<Account> opt = accountRepository.findByAddress(tx.from);
-      if (opt.isEmpty() || tx.nonce < opt.get().nonce
-          || (tx.nonce == opt.get().nonce && opt.get().balance < (tx.amount + tx.fee))) {
-        toRemove.add(tx.hash);
-        markTxFailed(tx);
+      bySender.computeIfAbsent(tx.from.toLowerCase(), k -> new ArrayList<>()).add(tx);
+    }
+    for (Map.Entry<String, List<Transaction>> entry : bySender.entrySet()) {
+      String sender = entry.getKey();
+      List<Transaction> txs = entry.getValue();
+      txs.sort(Comparator.comparingLong(t -> t.nonce));
+      Account acc = getAccount(sender);
+      long expectedNonce = acc.nonce;
+      long availableBalance = acc.balance;
+      for (Transaction tx : txs) {
+        long required = tx.amount + tx.fee;
+        if (tx.nonce != expectedNonce || availableBalance < required) {
+          cascadeEvictDependentTxs(sender, tx.nonce - 1);
+          mempool.remove(tx.hash);
+          markTxFailed(tx);
+          break;
+        }
+        expectedNonce++;
+        availableBalance -= required;
       }
     }
-    for (String hash : toRemove) {
-      mempool.remove(hash);
+  }
+
+  // Каскадно вытесняет все зависимые транзакции отправителя с nonce строго выше упавшего
+  private void cascadeEvictDependentTxs(String sender, long failedNonce) {
+    if (sender == null) return;
+    List<Transaction> toRemove = mempool.values().stream()
+      .filter(t -> t.from.equalsIgnoreCase(sender) && t.nonce > failedNonce)
+      .toList();
+    for (Transaction t : toRemove) {
+      mempool.remove(t.hash);
+      markTxFailed(t);
+      log.warn("Cascade evicted dependent tx {} (nonce {}) due to ancestor failure at nonce {}", t.hash, t.nonce, failedNonce);
     }
   }
 
   private Result<Void> evictLowestFeeTx(Transaction tx) {
     Transaction minTx = mempool.values().stream()
-      .filter(t -> mempool.values().stream().noneMatch(o -> o.from.equals(t.from) && o.nonce > t.nonce))
+      .filter(t -> !t.from.equalsIgnoreCase(tx.from))
+      .filter(t -> mempool.values().stream().noneMatch(o -> o.from.equalsIgnoreCase(t.from) && o.nonce > t.nonce))
       .min(Comparator.comparingLong(t -> t.fee))
       .orElse(null);
-    long minRequiredFee = (minTx != null) ? minTx.fee + 5L : 1L;
-    if (minTx == null || tx.fee < minRequiredFee) return Result.fail(429, "Mempool переполнен");
+    if (minTx == null || minTx.fee > Long.MAX_VALUE - 5L || tx.fee < minTx.fee + 5L) {
+      return Result.fail(429, "Mempool переполнен");
+    }
     mempool.remove(minTx.hash);
     markTxFailed(minTx);
     log.warn("Mempool full: evicted tx {} in favor of tx {}", minTx.hash, tx.hash);
@@ -669,7 +786,7 @@ public class BlockchainService {
       log.warn("Chain changed while mining block #{}, discarding", newBlock.height);
       return null;
     }
-    if (!ConsensusUtil.isValidProofOfWork(newBlock.hash, nodeConfig.difficulty)
+    if (!ConsensusUtil.isValidProofOfWork(newBlock.hash, newBlock.difficulty)
         || !newBlock.hash.equals(newBlock.calculateHash())) {
       log.error("Commit rejected: block #{} has invalid PoW or hash mismatch", newBlock.height);
       return null;
@@ -685,8 +802,7 @@ public class BlockchainService {
     boolean isCommitted = commitBlockState(newBlock, state);
     if (!isCommitted) return null;
 
-    log.info("Block mined successfully: height={}, hash={}, txs={}", newBlock.height, newBlock.hash, validTxs.size());
-    if (p2pClientManager != null) p2pClientManager.broadcast(OpCode.NEW_BLOCK_ANNOUNCE, newBlock, null);
+    log.info("Block mined successfully: height={}, hash={}, difficulty={}, txs={}", newBlock.height, newBlock.hash, newBlock.difficulty, validTxs.size());
     return newBlock;
   }
 
@@ -694,6 +810,7 @@ public class BlockchainService {
     int idx = 0;
     while (idx < newChain.size()) {
       Block candidate = newChain.get(idx);
+      if (candidate == null) break;
       Optional<Block> local = blockRepository.findByHeight(candidate.height);
       if (local.isPresent() && local.get().hash.equals(candidate.hash)) {
         idx++;
@@ -706,9 +823,35 @@ public class BlockchainService {
     for (int i = 0; i < branch.size(); i++) {
       Block b = branch.get(i);
       Block prev = (i == 0) ? ancestor : branch.get(i - 1);
-      if (!ConsensusUtil.isValidBlockHeader(prev, b, nodeConfig.difficulty, maxTime)) return false;
+      int expectedDiff = getBranchBlockDifficulty(prev, branch, ancestor, i);
+      if (b.difficulty != expectedDiff) {
+        log.warn("Branch rejected: block #{} difficulty mismatch (expected {}, got {})", b.height, expectedDiff, b.difficulty);
+        return false;
+      }
+      if (!ConsensusUtil.isValidBlockHeader(prev, b, expectedDiff, maxTime)) return false;
     }
     return true;
+  }
+
+  private int getBranchBlockDifficulty(Block prev, List<Block> branch, Block ancestor, int branchIdx) {
+    if (prev == null || prev.height == 0) return nodeConfig.difficulty;
+    int interval = nodeConfig.difficultyAdjustmentInterval;
+    long nextHeight = prev.height + 1;
+    if (interval <= 0 || nextHeight % interval != 0) {
+      return prev.difficulty > 0 ? prev.difficulty : nodeConfig.difficulty;
+    }
+    long anchorHeight = Math.max(0, nextHeight - interval);
+    Block anchor = findBlockInBranchOrDb(anchorHeight, branch, ancestor, branchIdx);
+    return ConsensusUtil.calculateNextDifficulty(prev, anchor, nodeConfig);
+  }
+
+  private Block findBlockInBranchOrDb(long height, List<Block> branch, Block ancestor, int branchIdx) {
+    if (ancestor != null && ancestor.height == height) return ancestor;
+    for (int i = 0; i < branchIdx; i++) {
+      Block b = branch.get(i);
+      if (b.height == height) return b;
+    }
+    return blockRepository.findByHeight(height).orElse(null);
   }
 
   private List<Block> collectRollbackBlocks(long fromHeight, long toHeight) {
@@ -761,16 +904,23 @@ public class BlockchainService {
       }
       return true;
     });
-    for (Block oldB : ctx.rollback) {
-      if (oldB.transactions == null) continue;
-      for (Transaction tx : oldB.transactions) {
-        mempool.put(tx.hash, tx);
-      }
-    }
+    Set<String> confirmedInBranch = new HashSet<>();
     for (Block b : ctx.branch) {
       if (b.transactions != null) {
         for (Transaction tx : b.transactions) {
+          confirmedInBranch.add(tx.hash);
           mempool.remove(tx.hash);
+        }
+      }
+    }
+    for (Block oldB : ctx.rollback) {
+      if (oldB.transactions == null) continue;
+      for (Transaction tx : oldB.transactions) {
+        if (confirmedInBranch.contains(tx.hash)) continue;
+        if (mempool.size() < nodeConfig.maxMempoolSize) {
+          mempool.put(tx.hash, tx);
+        } else {
+          markTxFailed(tx);
         }
       }
     }

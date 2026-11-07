@@ -25,6 +25,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import so.fox.nodechain.core.BlockchainService;
 import so.fox.nodechain.core.NodeWalletService;
 import so.fox.nodechain.crypto.CryptoUtil;
+import so.fox.nodechain.model.Transaction;
 
 /**
  * Комплексные стресс-тесты, фаззинг и проверка надежности REST API со стороны клиента.
@@ -488,7 +489,7 @@ public class ClientApiFuzzAndRobustnessTest {
     String recipientAddr = CryptoUtil.getAddressFromPublicKey(recipientKp.getPublic());
 
     // 1. Нулевая сумма перевода (amount = 0) -> 409
-    String canonical0 = senderAddr + "|" + recipientAddr + "|0|50|0";
+    String canonical0 = Transaction.buildCanonicalData("foxchain-main-1", senderAddr, recipientAddr, 0L, 50L, 0L, null);
     String sig0 = CryptoUtil.sign(senderKp.getPrivate(), canonical0);
     mockMvc.perform(post("/api/v1/transactions/send")
         .contentType(MediaType.APPLICATION_JSON)
@@ -497,7 +498,7 @@ public class ClientApiFuzzAndRobustnessTest {
       .andExpect(jsonPath("$.message").value("Транзакция отклонена: некорректная сумма"));
 
     // 2. Отрицательная сумма (amount = -500) -> 409
-    String canonicalNeg = senderAddr + "|" + recipientAddr + "|-500|50|0";
+    String canonicalNeg = Transaction.buildCanonicalData("foxchain-main-1", senderAddr, recipientAddr, -500L, 50L, 0L, null);
     String sigNeg = CryptoUtil.sign(senderKp.getPrivate(), canonicalNeg);
     mockMvc.perform(post("/api/v1/transactions/send")
         .contentType(MediaType.APPLICATION_JSON)
@@ -506,7 +507,7 @@ public class ClientApiFuzzAndRobustnessTest {
       .andExpect(jsonPath("$.message").value("Транзакция отклонена: некорректная сумма"));
 
     // 3. Отрицательная комиссия (fee = -10) -> 409
-    String canonicalNegFee = senderAddr + "|" + recipientAddr + "|100|-10|0";
+    String canonicalNegFee = Transaction.buildCanonicalData("foxchain-main-1", senderAddr, recipientAddr, 100L, -10L, 0L, null);
     String sigNegFee = CryptoUtil.sign(senderKp.getPrivate(), canonicalNegFee);
     mockMvc.perform(post("/api/v1/transactions/send")
         .contentType(MediaType.APPLICATION_JSON)
@@ -515,7 +516,7 @@ public class ClientApiFuzzAndRobustnessTest {
       .andExpect(jsonPath("$.message").value("Транзакция отклонена: некорректная комиссия"));
 
     // 4. Отправка самому себе (from == to) -> 409
-    String canonicalSelf = senderAddr + "|" + senderAddr + "|100|50|0";
+    String canonicalSelf = Transaction.buildCanonicalData("foxchain-main-1", senderAddr, senderAddr, 100L, 50L, 0L, null);
     String sigSelf = CryptoUtil.sign(senderKp.getPrivate(), canonicalSelf);
     mockMvc.perform(post("/api/v1/transactions/send")
         .contentType(MediaType.APPLICATION_JSON)
@@ -525,7 +526,7 @@ public class ClientApiFuzzAndRobustnessTest {
 
     // 5. Некорректный формат адреса получателя -> 400 Bad Request
     String badTo = "invalid_recipient_address";
-    String canonicalBadTo = senderAddr + "|" + badTo + "|100|50|0";
+    String canonicalBadTo = Transaction.buildCanonicalData("foxchain-main-1", senderAddr, badTo, 100L, 50L, 0L, null);
     String sigBadTo = CryptoUtil.sign(senderKp.getPrivate(), canonicalBadTo);
     mockMvc.perform(post("/api/v1/transactions/send")
         .contentType(MediaType.APPLICATION_JSON)
@@ -533,7 +534,7 @@ public class ClientApiFuzzAndRobustnessTest {
       .andExpect(status().isBadRequest());
 
     // 6. Недостаточно средств (у нового аккаунта баланс 0, отправка 1000) -> 409
-    String canonicalNoFunds = senderAddr + "|" + recipientAddr + "|1000|50|0";
+    String canonicalNoFunds = Transaction.buildCanonicalData("foxchain-main-1", senderAddr, recipientAddr, 1000L, 50L, 0L, null);
     String sigNoFunds = CryptoUtil.sign(senderKp.getPrivate(), canonicalNoFunds);
     mockMvc.perform(post("/api/v1/transactions/send")
         .contentType(MediaType.APPLICATION_JSON)
@@ -557,7 +558,7 @@ public class ClientApiFuzzAndRobustnessTest {
 
     // 1. Поддельная цифровая подпись (чужой приватный ключ) -> 400 Bad Request
     KeyPair hackerKp = CryptoUtil.generateKeyPair();
-    String fakeCanonical = nodeAddr + "|" + recipientAddr + "|1000|50|0";
+    String fakeCanonical = Transaction.buildCanonicalData("foxchain-main-1", nodeAddr, recipientAddr, 1000L, 50L, 0L, null);
     String fakeSig = CryptoUtil.sign(hackerKp.getPrivate(), fakeCanonical);
     mockMvc.perform(post("/api/v1/transactions/send")
         .contentType(MediaType.APPLICATION_JSON)
@@ -582,7 +583,7 @@ public class ClientApiFuzzAndRobustnessTest {
 
     // 4. Слишком длинный комментарий (> 256 символов) -> 409
     String longComment = "A".repeat(300);
-    String longCanonical = nodeAddr + "|" + recipientAddr + "|1000|50|0|" + longComment;
+    String longCanonical = Transaction.buildCanonicalData("foxchain-main-1", nodeAddr, recipientAddr, 1000L, 50L, 0L, longComment);
     String longSig = CryptoUtil.sign(nodeWalletService.privateKey, longCanonical);
     mockMvc.perform(post("/api/v1/transactions/send")
         .contentType(MediaType.APPLICATION_JSON)
@@ -592,7 +593,7 @@ public class ClientApiFuzzAndRobustnessTest {
 
     // 5. Успешная отправка валидной транзакции (Happy Path)
     long curNonce = blockchainService.getAccount(nodeAddr).nonce;
-    String validCanonical = nodeAddr + "|" + recipientAddr + "|10000|50|" + curNonce + "|Valid Tx";
+    String validCanonical = Transaction.buildCanonicalData("foxchain-main-1", nodeAddr, recipientAddr, 10000L, 50L, curNonce, "Valid Tx");
     String validSig = CryptoUtil.sign(nodeWalletService.privateKey, validCanonical);
     String validPayload = createTxJson(nodeAddr, recipientAddr, 10000L, 50L, curNonce, nodePubB64, validSig, "Valid Tx");
 
@@ -763,6 +764,7 @@ public class ClientApiFuzzAndRobustnessTest {
 
   private static Map<String, Object> getBaseTxMap() {
     Map<String, Object> map = new HashMap<>();
+    map.put("chainId", "foxchain-main-1");
     map.put("from", "f5ox000000000000000000000000000000000000000000000000000000000000");
     map.put("to", "8fox000000000000000000000000000000000000000000000000000000000000");
     map.put("amount", 1000L);
@@ -776,6 +778,7 @@ public class ClientApiFuzzAndRobustnessTest {
   private String createTxJson(String from, String to, long amount, long fee, long nonce,
                               String pubKey, String sig, String comment) {
     Map<String, Object> m = new HashMap<>();
+    m.put("chainId", "foxchain-main-1");
     m.put("from", from);
     m.put("to", to);
     m.put("amount", amount);
