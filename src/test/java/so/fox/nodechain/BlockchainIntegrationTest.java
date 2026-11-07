@@ -240,8 +240,9 @@ public class BlockchainIntegrationTest {
 
     Block futureBlock = new Block(
       latest.height + 1,
+      nodeConfig.chainId,
       latest.hash,
-      "miner-future",
+      latest.minerAddress,
       Collections.emptyList(),
       nodeConfig.difficulty
     );
@@ -252,8 +253,9 @@ public class BlockchainIntegrationTest {
 
     Block pastBlock = new Block(
       latest.height + 1,
+      nodeConfig.chainId,
       latest.hash,
-      "miner-past",
+      latest.minerAddress,
       Collections.emptyList(),
       nodeConfig.difficulty
     );
@@ -281,7 +283,7 @@ public class BlockchainIntegrationTest {
     Block lastForkBlock = null;
 
     for (long h = 1; h <= targetHeight; h++) {
-      Block fb = new Block(h, prevHash, altMiner, Collections.emptyList(), nodeConfig.difficulty);
+      Block fb = new Block(h, nodeConfig.chainId, prevHash, altMiner, Collections.emptyList(), nodeConfig.difficulty);
       fb.timestamp = base + (h * 100);
       fb.mineBlock(nodeConfig.difficulty);
       forkChain.add(fb);
@@ -646,11 +648,11 @@ public class BlockchainIntegrationTest {
   @Test
   public void testBlockInvalidTxCountOrMinerAddressRejection() {
     Block latest = blockchainService.getLatestBlockHeader();
-    Block b = new Block(latest.height + 1, latest.hash, "invalid_miner_addr", Collections.emptyList(), nodeConfig.difficulty);
+    Block b = new Block(latest.height + 1, nodeConfig.chainId, latest.hash, "invalid_miner_addr", Collections.emptyList(), nodeConfig.difficulty);
     b.mineBlock(nodeConfig.difficulty);
     Assertions.assertFalse(blockchainService.applyIncomingBlock(b), "Block with invalid minerAddress must be rejected");
 
-    Block b2 = new Block(latest.height + 1, latest.hash, latest.minerAddress, Collections.emptyList(), nodeConfig.difficulty);
+    Block b2 = new Block(latest.height + 1, nodeConfig.chainId, latest.hash, latest.minerAddress, Collections.emptyList(), nodeConfig.difficulty);
     b2.txCount = 999;
     b2.mineBlock(nodeConfig.difficulty);
     Assertions.assertFalse(blockchainService.applyIncomingBlock(b2), "Block with mismatched txCount must be rejected");

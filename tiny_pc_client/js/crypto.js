@@ -187,19 +187,53 @@ const CryptoUtil = {
     hexArr[posF] = 'f';
     hexArr[posO] = 'o';
     hexArr[posX] = 'x';
+
+    const payload = hexArr.slice(0, 56).join('');
+    const checksum = this.computeCrc32(payload);
+    for (let i = 0; i < 8; i++) {
+      hexArr[56 + i] = checksum[i];
+    }
     return hexArr.join('').toLowerCase();
   },
 
   /**
-   * Проверяет формат Fox-адреса сети.
+   * Вычисляет 8-символьную hex контрольную сумму CRC32 от строки.
+   */
+  computeCrc32(str) {
+    if (!str) return '00000000';
+    let crc = 0 ^ (-1);
+    for (let i = 0; i < str.length; i++) {
+      crc = (crc >>> 8) ^ this.CRC32_TABLE[(crc ^ str.charCodeAt(i)) & 0xFF];
+    }
+    return ((crc ^ (-1)) >>> 0).toString(16).padStart(8, '0');
+  },
+
+  /**
+   * Таблица констант IEEE 802.3 CRC32.
+   */
+  CRC32_TABLE: (() => {
+    const table = [];
+    for (let i = 0; i < 256; i++) {
+      let c = i;
+      for (let k = 0; k < 8; k++) {
+        c = ((c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1));
+      }
+      table[i] = c;
+    }
+    return table;
+  })(),
+
+  /**
+   * Проверяет формат Fox-адреса сети и его контрольную сумму.
    */
   isValidAddress(addr) {
     if (!addr || typeof addr !== 'string' || addr.length !== 64) return false;
     const lower = addr.toLowerCase();
-    return this.ADDRESS_PATTERN.test(lower)
-      && lower.indexOf('f') >= 0
-      && lower.indexOf('o') >= 0
-      && lower.indexOf('x') >= 0;
+    if (!this.ADDRESS_PATTERN.test(lower)) return false;
+    if (lower.indexOf('f') < 0 || lower.indexOf('o') < 0 || lower.indexOf('x') < 0) return false;
+    const payload = lower.substring(0, 56);
+    const expected = this.computeCrc32(payload);
+    return lower.substring(56).toLowerCase() === expected;
   },
 
   /**

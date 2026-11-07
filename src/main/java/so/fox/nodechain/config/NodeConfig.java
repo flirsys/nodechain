@@ -74,6 +74,18 @@ public class NodeConfig {
     if (p2pPort <= 0 || p2pPort > 65535) {
       throw new IllegalStateException("Некорректный порт P2P: " + p2pPort);
     }
+    if (serverPort < 0 || serverPort > 65535) {
+      throw new IllegalStateException("Некорректный порт HTTP сервера: " + serverPort);
+    }
+    if (serverPort > 0 && serverPort == p2pPort) {
+      throw new IllegalStateException("Порты server.port и node.p2p.port не должны совпадать: " + serverPort);
+    }
+    if (dbPath == null || dbPath.isBlank()) {
+      throw new IllegalStateException("Параметр node.db.path не может быть пустым");
+    }
+    if (difficultyAdjustmentInterval <= 0) {
+      throw new IllegalStateException("Параметр blockchain.difficulty-adjustment-interval должен быть больше 0: " + difficultyAdjustmentInterval);
+    }
     if (maxMempoolSize <= 0) {
       throw new IllegalStateException("Параметр blockchain.max-mempool-size должен быть больше 0");
     }

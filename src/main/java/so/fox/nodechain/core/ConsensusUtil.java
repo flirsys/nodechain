@@ -1,6 +1,8 @@
 package so.fox.nodechain.core;
 
 import java.math.BigInteger;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -13,12 +15,26 @@ public final class ConsensusUtil {
 
   private ConsensusUtil() {}
 
-  // Проверяет заголовок блока с явным указанием сложности и верхнего лимита времени
-  public static boolean isValidBlockHeader(Block prev, Block next, int difficulty, long maxTime) {
+  public static final long MIN_RELAY_FEE = 1L;
+
+  // Вычисляет медианное время прошлых блоков (Median-Time-Past MTP-11)
+  public static long calculateMedianTimePast(List<Long> timestamps) {
+    if (timestamps == null || timestamps.isEmpty()) return 0L;
+    List<Long> sorted = new ArrayList<>(timestamps);
+    Collections.sort(sorted);
+    return sorted.get(sorted.size() / 2);
+  }
+
+  // Проверяет заголовок блока с валидацией PoW, MTP, лимита времени и chainId
+  public static boolean isValidBlockHeader(Block prev, Block next, int difficulty, long maxTime, String expectedChainId, long mtp) {
     if (next == null || prev == null) return false;
     if (next.height != prev.height + 1) return false;
     if (!prev.hash.equals(next.previousHash)) return false;
-    if (next.timestamp < prev.timestamp || next.timestamp > maxTime) return false;
+    if (next.timestamp <= mtp || next.timestamp > maxTime) return false;
+    if (expectedChainId != null && !expectedChainId.isBlank()) {
+      if (next.chainId == null || !expectedChainId.equals(next.chainId)) return false;
+    }
+    if (prev.chainId != null && next.chainId != null && !prev.chainId.equals(next.chainId)) return false;
     if (next.height > 0 && !CryptoUtil.isValidAddress(next.minerAddress)) return false;
     if (next.transactions == null || next.txCount != next.transactions.size()) return false;
     if (next.difficulty != difficulty) return false;
@@ -67,7 +83,7 @@ public final class ConsensusUtil {
     if (!CryptoUtil.isValidAddress(tx.from) || !CryptoUtil.isValidAddress(tx.to)) return Result.fail(400, "Некорректный формат адреса");
     if (tx.from.equalsIgnoreCase(tx.to)) return Result.fail(409, "Транзакция отклонена: отправка самому себе");
     if (tx.amount <= 0) return Result.fail(409, "Транзакция отклонена: некорректная сумма");
-    if (tx.fee < 0) return Result.fail(409, "Транзакция отклонена: некорректная комиссия");
+    if (tx.fee < MIN_RELAY_FEE) return Result.fail(409, "Транзакция отклонена: некорректная комиссия");
     if (tx.amount > Long.MAX_VALUE - tx.fee) return Result.fail(409, "Транзакция отклонена: переполнение суммы и комиссии");
     if (tx.nonce < 0) return Result.fail(409, "Транзакция отклонена: некорректный nonce");
     if (tx.timestamp <= 0 || tx.timestamp > System.currentTimeMillis() + 600_000L) {
@@ -90,7 +106,7 @@ public final class ConsensusUtil {
   }
 
   // Проверяет уникальность хешей транзакций внутри списка одного блока
-  public static boolean areTransactionsUnique(List<Transaction> txs) {
+  public static boolean isTransactionsUnique(List<Transaction> txs) {
     if (txs == null || txs.isEmpty()) return true;
     Set<String> seen = new HashSet<>();
     for (Transaction tx : txs) {

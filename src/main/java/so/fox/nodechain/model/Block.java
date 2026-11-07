@@ -18,6 +18,7 @@ public class Block implements Serializable {
   private static final Logger log = LoggerFactory.getLogger(Block.class);
 
   public long height;
+  public String chainId;
   public String hash;
   public String previousHash;
   public String merkleRoot;
@@ -30,14 +31,15 @@ public class Block implements Serializable {
   @JsonSetter(nulls = Nulls.AS_EMPTY)
   public List<Transaction> transactions = new ArrayList<>();
 
-  public record Meta(long height, String hash, String previousHash, String merkleRoot, String minerAddress, int txCount, long timestamp, int difficulty, long nonce) {}
+  public record Meta(long height, String chainId, String hash, String previousHash, String merkleRoot, String minerAddress, int txCount, long timestamp, int difficulty, long nonce) {}
 
   public Block() {}
 
-  // Конструктор нового блока перед началом майнинга с заданной сложностью
-  public Block(long height, String previousHash, String minerAddress, List<Transaction> txs, int difficulty) {
+  // Конструктор создания блока перед майнингом с обязательным chainId
+  public Block(long height, String chainId, String previousHash, String minerAddress, List<Transaction> txs, int difficulty) {
     this.height = height;
-    this.previousHash = previousHash;
+    this.chainId = chainId != null ? chainId.trim() : "";
+    this.previousHash = previousHash != null ? previousHash : "";
     this.minerAddress = minerAddress != null ? minerAddress : "";
     this.transactions = txs != null ? new ArrayList<>(txs) : new ArrayList<>();
     this.txCount = this.transactions.size();
@@ -48,24 +50,26 @@ public class Block implements Serializable {
     this.hash = calculateHash();
   }
 
-  // Конструктор полного восстановления блока из базы данных через контекст Meta
+  // Конструктор восстановления блока из репозитория
   public Block(Meta meta) {
     this.height = meta.height();
+    this.chainId = meta.chainId();
     this.hash = meta.hash();
     this.previousHash = meta.previousHash();
     this.merkleRoot = meta.merkleRoot();
     this.minerAddress = meta.minerAddress() != null ? meta.minerAddress() : "";
     this.txCount = meta.txCount();
     this.timestamp = meta.timestamp();
-    this.difficulty = meta.difficulty() > 0 ? meta.difficulty() : 4;
+    this.difficulty = meta.difficulty();
     this.nonce = meta.nonce();
     this.transactions = new ArrayList<>();
   }
 
-  // Создает Genesis-блок #0 с явным указанием сложности и временной метки
-  public static Block createGenesis(String minerAddress, int difficulty, long timestamp) {
+  // Создает Genesis-блок #0 строго с привязкой к chainId
+  public static Block createGenesis(String chainId, String minerAddress, int difficulty, long timestamp) {
     Block genesis = new Block();
     genesis.height = 0;
+    genesis.chainId = chainId != null ? chainId.trim() : "";
     genesis.previousHash = "0";
     genesis.minerAddress = (minerAddress != null && !minerAddress.isBlank()) ? minerAddress : "GENESIS";
     genesis.transactions = Collections.emptyList();
@@ -78,14 +82,9 @@ public class Block implements Serializable {
     return genesis;
   }
 
-  // Создает Genesis-блок #0 с детерминированным timestamp = 0L
-  public static Block createGenesis(String minerAddress, int difficulty) {
-    return createGenesis(minerAddress, difficulty, 0L);
-  }
-
-  // Вычисляет SHA-256 хеш блока по всем полям заголовка
+  // Вычисляет SHA-256 хеш блока строго включая chainId сети
   public String calculateHash() {
-    String payload = height + "|" + previousHash + "|" + (merkleRoot != null ? merkleRoot : "") + "|"
+    String payload = height + "|" + chainId + "|" + previousHash + "|" + (merkleRoot != null ? merkleRoot : "") + "|"
       + (minerAddress != null ? minerAddress : "") + "|" + timestamp + "|" + difficulty + "|" + nonce;
     return CryptoUtil.sha256Hex(payload);
   }

@@ -127,18 +127,20 @@ flowchart TB
 * **Digital Signature Algorithm**: `Ed25519` (raw binary signature: strictly 64 bytes, Base64: 88 characters instead of 344 for RSA).
 * **Performance**: Signature verification and generation is 10–20x faster, while network transmission overhead for keys and signatures is reduced by more than 4x.
 
-### 2. Fox Address Format
-Wallet addresses in NodeChain are **64-character strings** (`[0-9a-fox]{64}`), deterministically derived from the public key with brand symbols `'f'`, `'o'`, and `'x'` substituted in the prefix:
+### 2. Fox Address Format and CRC32 Checksum
+Wallet addresses in NodeChain are **64-character strings** (`[0-9a-fox]{64}`), deterministically derived from the public key with brand symbols `'f'`, `'o'`, and `'x'` substituted in the prefix and protected by a 32-bit checksum:
 
 1. Calculate `SHA-256` hash of DER-encoded public key bytes (`PublicKey.getEncoded()`).
-2. Convert the digest into a 64-character hex string.
+2. Convert the digest into a hex string.
 3. The first 3 raw bytes of the digest dictate brand character positions:
    * Byte 0 selects the position for `'f'` (within index range `0..4`).
    * Byte 1 selects the position for `'o'` (range `0..4`, excluding `'f'`).
    * Byte 2 selects the position for `'x'` (range `0..4`, excluding `'f'` and `'o'`).
+4. The first 56 characters form the address payload.
+5. The final 8 hex characters (indices 56..63) contain the `CRC32` checksum (IEEE 802.3) of the first 56 characters in lowercase. This guarantees protection against typos and accidental transfers to non-existent addresses — tampering with even a single character causes `isValidAddress()` to fail.
 
 > **Valid Address Example:**  
-> `f5ox17c91e0a29b2b2b1cf8813bc30e386abed50e82845bf13c8f8b8a531639d`
+> `6foxabbe6c0d624d0bb3de4c8375643f4fce0c9744c0096f14b919dfe3f031f1`
 
 ### 3. Canonical Signing Data Format (Anti-Malleability & Cross-Chain Replay)
 Transactions are strictly signed over a deterministic canonical string delimited by `|` with mandatory `chainId`:
@@ -147,9 +149,9 @@ Transactions are strictly signed over a deterministic canonical string delimited
 - If comment is present:  
   `chainId|from|to|amount|fee|nonce|comment.trim()`
 
-The transaction hash is computed from:  
+The transaction hash is computed from a deterministic string (empty comment slot is preserved):  
 - If comment is empty:  
-  `chainId|from|to|amount|fee|nonce|signature`
+  `chainId|from|to|amount|fee|nonce||signature`
 - If comment is present:  
   `chainId|from|to|amount|fee|nonce|comment.trim()|signature`
 
@@ -186,9 +188,10 @@ Unlike UTXO (Bitcoin model), NodeChain operates on an **Account-Based state mode
 +--------------------------------------------------------------------------+
 | Block Header                                                             |
 |   height:        42                                                      |
+|   chainId:       "foxchain-main-1"                                       |
 |   previousHash:  00a8f93b...                                             |
 |   merkleRoot:    7d2c418e...                                             |
-|   minerAddress:  fox7a1bc...                                             |
+|   minerAddress:  6foxabbe6c0d624d0bb3de4c8375643f4fce0c9744c0096f14b9...  |
 |   timestamp:     1730912400000                                           |
 |   difficulty:    4                                                       |
 |   nonce:         184729                                                  |
@@ -198,16 +201,19 @@ Unlike UTXO (Bitcoin model), NodeChain operates on an **Account-Based state mode
 +--------------------------------------------------------------------------+
 ```
 
-### 2. Proof-of-Work (PoW) and Difficulty Adjustment (Bitcoin-style DAA)
+### 2. Proof-of-Work (PoW) and Difficulty Adjustment (Bitcoin-style DAA & MTP-11)
 The miner increments the block `nonce` until the block hash satisfies difficulty criteria:
-- **Block Payload** = `height|previousHash|merkleRoot|minerAddress|timestamp|difficulty|nonce`
+- **Block Payload** = `height|chainId|previousHash|merkleRoot|minerAddress|timestamp|difficulty|nonce`
 - **Block Hash** = `SHA256(Block Payload)`
-- **Valid PoW** = `Block Hash` begins with `difficulty` leading zeros (`00...0`)
+- **Valid PoW** = `Block Hash` begins with `difficulty` leading hex zeros (`00...0`)
+- **Median-Time-Past (MTP-11)**: the block timestamp must be strictly greater than the median timestamp of the previous 11 blocks (`next.timestamp > mtp`), preventing Time Warp difficulty manipulation.
+- **Timestamp Drift Limit**: block timestamp cannot exceed local node time by more than **30 seconds** (`next.timestamp <= now + 30_000ms`).
 - **Difficulty Adjustment Algorithm (DAA)**: every `blockchain.difficulty-adjustment-interval` blocks (default: 10), difficulty retargets based on elapsed time between the latest block and the anchor block:
   - If actual time span $< \text{targetTime} / 2$, difficulty increases by $+1$ (up to `max-difficulty`).
   - If actual time span $> \text{targetTime} \times 2$, difficulty decreases by $-1$ (down to `min-difficulty`).
   - Blocks with spoofed or mismatched difficulty are rejected by peers (`b.difficulty != expectedDiff`).
-- **Genesis Block**: deterministic `timestamp = 0L` and base consensus difficulty.
+- **Genesis Block**: created deterministically with network binding via `Block.createGenesis(chainId, minerAddress, difficulty, timestamp)`.
+- **Minimum Relay Fee**: transactions require a minimum fee of `MIN_RELAY_FEE = 1L` atomic unit to protect mempool from spam.
 
 ### 3. Merkle Tree (RFC 6962 Domain Separation)
 To protect against Second Preimage Attacks—where an internal Merkle tree node is submitted as a leaf transaction—the hashing implements strict domain separation in compliance with RFC 6962:
@@ -282,7 +288,7 @@ sequenceDiagram
 
 ### Step-Back Fork Locator and Loop Protection
 If an incoming block batch does not connect to the tip of the local chain:
-1. **Reorganization Depth Limit (`MAX_REORG_DEPTH = 100`)**: the node never rolls back more than 100 blocks from the current tip, safeguarding the network from deep Long-Range attacks.
+1. **Reorganization Depth Limit (`MAX_REORG_DEPTH = 20`)**: the node never rolls back more than 20 blocks from the current tip, safeguarding the network from deep reorgs, forks, and double-spending attacks.
 2. **Step-Back**: the node automatically steps back along the chain in increments of 20 blocks (`Math.max(1, lowestReceived - 20)`) and sends a `GET_BLOCKS` request.
 3. **Step-Back Loop Guard**: the `peerStepBackCount` counter monitors consecutive step-back requests per connection. If a peer fails to connect branches and triggers more than 10 consecutive step-backs (`stepBacks > 10`), the TCP connection is immediately terminated, neutralizing DoS loops.
 4. Upon locating a locally known Common Ancestor and verifying superior cumulative chain work (`branchWork > curWork`), the node executes dry-run simulation and an atomic `reorganizeChain`.
@@ -313,14 +319,14 @@ To eliminate overhead and maximize sync throughput, nodes communicate over a cus
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
 
-| Field | Type | Size | Description |
-| :--- | :--- | :--- | :--- |
-| **`MAGIC`** | `short` | 2 bytes | Constant `0x4658` (ASCII `"FX"`). Packets with mismatching magic are immediately dropped. |
-| **`FLAG`** | `byte` | 1 byte | `0x00` = RAW JSON, `0x01` = GZIP-compressed JSON. |
-| **`REQUEST_ID`** | `int32` | 4 bytes | Request identifier for matching asynchronous responses. |
-| **`OP_CODE`** | `byte` | 1 byte | Command operation code (see table below). |
-| **`LENGTH`** | `int32` | 4 bytes | Length of the payload body in bytes (max **8 MiB**). |
-| **`PAYLOAD`** | `byte[]` | `LENGTH` | Message payload in JSON format (compressed with GZIP if FLAG=1). |
+| Field | Offset | Type | Size | Description |
+| :--- | :---: | :--- | :--- | :--- |
+| **`MAGIC`** | `0..1` | `short` | 2 bytes | Constant `0x4658` (ASCII `"FX"`). Packets with mismatching magic are immediately dropped. |
+| **`FLAG`** | `2` | `byte` | 1 byte | `0x00` = RAW JSON, `0x01` = GZIP-compressed JSON. |
+| **`REQUEST_ID`** | `3..6` | `int32` | 4 bytes | Request identifier for matching asynchronous responses. |
+| **`OP_CODE`** | `7` | `byte` | 1 byte | Command operation code (see table below). |
+| **`LENGTH`** | `8..11` | `int32` | 4 bytes | Length of the payload body in bytes (max **4 MiB**; up to 64 KiB for control packets, up to 16 bytes for PING/PONG). |
+| **`PAYLOAD`** | `12+` | `byte[]` | `LENGTH` | Message payload in JSON format (compressed with GZIP if FLAG=1). |
 
 ### 2. Operation Codes Table (OpCodes)
 
@@ -361,7 +367,10 @@ Incoming TCP connections are sandboxed: until the remote node delivers a valid `
 * **Strict Nonce Anti-Replay Guard**: the `sessionNonce` field is strictly required. All seen nonces are registered in `seenHandshakeNonces`. Replayed handshake frames are rejected immediately. Stale nonces are automatically pruned when the cache exceeds 2,000 entries.
 * Timestamp acceptance window: -60s to +120s from node's local clock.
 * **Bidirectional Gossip**: upon accepting a connection, the node records the peer's listening `p2pPort` in the `peers` table and immediately triggers peer exchange via `GET_PEERS` / `PEERS_LIST`.
-* **Genesis Adoption on Fast-Sync (`adoptPeerGenesisBlock`)**: a fresh node starting at height 0 adopts the remote peer's genesis block if valid (`Block.createGenesis(remoteGenesis.minerAddress)`) and if no explicit `blockchain.genesis-address` was configured locally.
+* **Anti-Eclipse Connection Quotas**: connections per external IP are capped at 2; total connections are bounded at 64 with `MAX_INBOUND_CONNECTIONS = 48`, guaranteeing at least 16 slots reserved exclusively for honest outbound connections.
+* **SSRF & Peer Poisoning Network Guard**: `isSafePeerAddress` rejects connections to system ports (< 1024), sensitive application ports (22, 23, 25, 80, 443, 3306, 5432, 6379, 27017, 11211, 8080), RFC 1918 private subnets (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), broadcast IPs, and cloud metadata endpoints (`169.254.0.0/16`) for external peers while permitting isolated local testing on localhost.
+* **Slowloris DoS Protection**: socket timeout is set to 10s, and frame reads in `NodePacket.readFullyWithTimeout` enforce a strict 10s completion deadline.
+* **Genesis Adoption on Fast-Sync (`adoptPeerGenesisBlock` / `adoptPeerGenesisChain`)**: a fresh node at height 0 only adopts a peer genesis if `blockchain.genesis-address` is explicitly configured locally and matches the remote genesis miner address. Foreign unverified genesis blocks are rejected immediately.
 
 ---
 
@@ -369,10 +378,10 @@ Incoming TCP connections are sandboxed: until the remote node delivers a valid `
 
 The database runs on native `sqlite-jdbc` with fine-tuned parameters for blockchain workloads:
 
-* **`PRAGMA journal_mode = WAL;`** - Write-Ahead Logging permits concurrent reads without blocking write transactions.
-* **`PRAGMA synchronous = NORMAL;`** - optimal balance between durability and block commit latency.
-* **`PRAGMA busy_timeout = 5000;`** - file lock acquisition timeout of up to 5 seconds to eliminate `SQLITE_BUSY`.
-* **`maximumPoolSize = 1`** - single active connection pool prevents multi-threaded lock conflicts in SQLite at the JVM level.
+* **`PRAGMA journal_mode = WAL;`** — Write-Ahead Logging permits concurrent reads without blocking write transactions.
+* **`PRAGMA synchronous = NORMAL;`** — optimal balance between durability and block commit latency.
+* **`PRAGMA busy_timeout = 10000;`** — file lock acquisition timeout of up to 10 seconds to eliminate `SQLITE_BUSY`.
+* **`maximumPoolSize = 10` & `connectionInitSql`** — HikariCP connection pool of 10 connections enforces PRAGMAs (`WAL`, `synchronous = NORMAL`, `busy_timeout = 10000`) on **every** pooled connection via `connectionInitSql`, eliminating `SQLITE_BUSY` errors during concurrent REST reads and background P2P execution.
 
 ### Database Schema
 
@@ -380,13 +389,14 @@ The database runs on native `sqlite-jdbc` with fine-tuned parameters for blockch
 -- Blockchain blocks table
 CREATE TABLE IF NOT EXISTS blocks (
   height INTEGER PRIMARY KEY,
+  chain_id TEXT NOT NULL,
   hash TEXT UNIQUE NOT NULL,
   previous_hash TEXT NOT NULL,
   merkle_root TEXT NOT NULL,
   miner_address TEXT NOT NULL,
   tx_count INTEGER NOT NULL,
   timestamp INTEGER NOT NULL,
-  difficulty INTEGER NOT NULL DEFAULT 4,
+  difficulty INTEGER NOT NULL,
   nonce INTEGER NOT NULL
 );
 
@@ -395,7 +405,7 @@ CREATE TABLE IF NOT EXISTS transactions (
   hash TEXT PRIMARY KEY,
   block_height INTEGER,
   block_hash TEXT,
-  chain_id TEXT,
+  chain_id TEXT NOT NULL,
   tx_from TEXT NOT NULL,
   tx_to TEXT NOT NULL,
   amount INTEGER NOT NULL,
@@ -436,7 +446,7 @@ CREATE TABLE IF NOT EXISTS peers (
 
 ## 🌐 REST API v1 (Full Specification)
 
-API listens by default on port `8080` with CORS support for web wallets and block explorers (`originPatterns = "*"`).
+API listens by default on port `8080` with CORS support for local web wallets and block explorers (`originPatterns = { "http://localhost:*", "http://127.0.0.1:*", "null" }`).
 
 ### 1. Address State
 Returns confirmed balance, unconfirmed balance (accounting for pending outgoing transactions in mempool), current `nonce`, and total transaction count.
@@ -688,8 +698,9 @@ tiny_pc_client/
 ├── index.html       # Single HTML entry point (dark theme, responsive layout)
 ├── css/
 │   └── style.css    # Custom lightweight styles without bulky UI frameworks
+├── vendor/
+│   └── mithril.min.js # Reactive micro-framework (8 KiB gzipped)
 └── js/
-    ├── mithril.min.js # Reactive micro-framework (8 KiB gzipped)
     ├── crypto.js    # Web Crypto API module (Ed25519)
     ├── api.js       # HTTP client connecting to NodeChain REST API
     ├── state.js     # Centralized state manager with automated nonce pipelining
@@ -702,7 +713,7 @@ tiny_pc_client/
 * 🚀 **Nonce Pipelining**: Inspects the node's mempool and dynamically computes `nextNonce` factoring in pending outgoing transactions, enabling rapid transaction sequences without waiting for block confirmations.
 * 🪙 **Dev Tool & Faucet**: Built-in developer console to dispense coins from the miner wallet and broadcast test stress-transactions across the network.
 * 🔍 **Built-in Block & Tx Explorer**: Real-time lookups by block height or hash, detailed transaction views, and confirmation count tracking.
-* 🌐 **Zero-Config Local Mode**: Can be opened directly from the file system (`file:///.../index.html`) or via any static file server (`python -m http.server 3000`) thanks to wildcard CORS `originPatterns` on the node.
+* 🌐 **Zero-Config Local Mode**: Can be opened directly from the file system (`file:///.../index.html`) or via any static file server (`python -m http.server 3000`) thanks to local CORS `originPatterns` support on the node.
 
 ---
 
@@ -923,15 +934,15 @@ except urllib.error.HTTPError as e:
 NodeChain implements algorithmic defenses against common blockchain attacks:
 
 1. **Transaction Malleability Protection**:
-   Signatures are applied strictly over a canonical delimiter-separated argument string (`from|to|amount|fee|nonce|comment.trim()`). No extraneous metadata, whitespace injection, or altered parameters can pass validation without breaking the Ed25519 signature.
+   Signatures are applied strictly over a canonical delimiter-separated argument string (`chainId|from|to|amount|fee|nonce|comment.trim()`). No extraneous metadata, whitespace injection, or altered parameters can pass validation without breaking the Ed25519 signature.
 2. **DoS Mempool Eviction Protection (Tail Nonce Rule)**:
    When reaching `maxMempoolSize`, transactions with lower fees can only be evicted if they are **tail nonces**. Evicting `nonce 0` is prohibited if dependent transactions (`nonce 1`, `nonce 2`) exist in mempool. Accounts with zero balance cannot displace valid transactions.
-3. **Network GZIP Bomb Defense**:
-   `NodePacket.decompressGzip` enforces a strict decompression threshold. If uncompressed stream exceeds 8 MiB, decompression aborts immediately with an I/O exception.
+3. **Network GZIP Bomb Defense & Frame Size Ceilings**:
+   `NodePacket.decompressGzip` enforces a strict decompression threshold. If uncompressed stream exceeds 4 MiB, decompression aborts immediately with an I/O exception. Inbound network frames are bound by strict size limits: up to 16 bytes for PING/PONG, up to 64 KiB for control packets, and up to 4 MiB for block batches.
 4. **Arithmetic Overflow Protection**:
    All balance additions and subtractions for transactions, fees, and mining rewards utilize `Math.addExact()` and `Math.subtractExact()`. Negative values or inputs overflowing `Long.MAX_VALUE` trigger consensus errors.
-5. **Timestamp Drift Protection**:
-   Blocks carrying timestamps from the distant future ($>10$ minutes) or older than the previous block are rejected instantly.
+5. **Timestamp Drift & Median-Time-Past (MTP-11)**:
+   A median filter over the previous 11 blocks (**Median-Time-Past MTP-11**, Bitcoin Core model) enforces that each block's timestamp must be strictly greater than the median of the prior 11 blocks (`next.timestamp > mtp`). In addition, timestamps cannot exceed the node's local time by more than **30 seconds** (tightened from 10 minutes), neutralizing Time Warp difficulty manipulation.
 6. **Per-IP Rate Limiting with Localhost Exemption**:
    Incoming network packets are rate-limited per time window for each `IP:opcode` pair from external hosts. Local addresses (`127.0.0.1`, `localhost`, `::1`) are exempt from limits to enable uninterrupted multi-node cluster testing. Memory tables in P2P (`seenHandshakeNonces > 2000`) and REST API (`lastRestTxTime > 1000`) automatically prune stale entries to prevent out-of-memory DoS.
 7. **Global Exception Handling & 500 Immunity (API Robustness)**:
@@ -940,16 +951,16 @@ NodeChain implements algorithmic defenses against common blockchain attacks:
    During bootstrap, `NodeWalletService` validates the Ed25519 keypair by signing a test payload (`challenge-nodewallet.dat`). Any file corruption or key mismatch halts node startup prior to opening network ports, preventing miner reward loss.
 9. **Anti-Float Coercion Protection**:
    Jackson deserialization disables float-to-integer coercion (`featuresToDisable(ACCEPT_FLOAT_AS_INT)` and `spring.jackson.deserialization.accept-float-as-int=false`). Fractional inputs in amounts or fees are rejected immediately with `400 Bad Request`.
-10. **Reorganization Depth Ceiling & Step-Back Loop Guard (`MAX_REORG_DEPTH = 100`)**:
-    Chain reorganization depth is capped at 100 blocks from the current tip. Attempts by peers to force deeper rollbacks are rejected. If a peer fails to locate a common ancestor after 10 consecutive step-back requests (`peerStepBackCount > 10`), the connection is forcibly terminated.
+10. **Reorganization Depth Ceiling & Step-Back Loop Guard (`MAX_REORG_DEPTH = 20`)**:
+    Chain reorganization depth is capped at **20 blocks** (reduced from 100) to protect the network from deep reorganizations, forks, and double-spending. If a peer fails to locate a common ancestor after 10 consecutive step-back requests (`peerStepBackCount > 10`), the connection is forcibly terminated.
 11. **Merkle Second-Preimage Collision Defense (RFC 6962 Domain Separation)**:
     Transaction leaves are hashed with prefix `00` (`H_leaf = SHA256("00" + tx.hash)`), and internal nodes with prefix `01` (`H_parent = SHA256("01" + H_left + H_right)`), mathematically preventing intermediate nodes from being presented as leaf transactions.
-12. **Genesis Block & Pre-mine Protection (`adoptPeerGenesisBlock`)**:
-    A clean node accepts a peer's genesis block only if it strictly matches canonical structure `Block.createGenesis(minerAddress, difficulty)`, and if no custom `blockchain.genesis-address` was specified in the local configuration.
+12. **Genesis Block & Pre-mine Protection (`adoptPeerGenesisBlock` / `adoptPeerGenesisChain`)**:
+    A clean node accepts a peer's genesis block only if `blockchain.genesis-address` is explicitly configured in local properties and matches the incoming genesis miner address. Foreign unverified genesis blocks are rejected immediately, preventing Genesis Hijack.
 13. **Bitcoin DAA & Cumulative ChainWork ($16^{\text{difficulty}}$)**:
     Dynamic difficulty retargeting every 10 blocks according to actual block production intervals. Fork cumulative work is computed as the exact sum of $16^{\text{difficulty}}$ across all blocks in the branch. Blocks carrying forged or mismatched difficulty are blocked before storage.
 14. **Cross-Chain Replay Immunity via Strict Chain ID**:
-    Network identifier (`chainId`) is strictly bound to canonical signature payloads, transaction hash calculations, REST API payloads, and P2P handshakes, preventing cross-chain transaction replay across testnets or parallel networks.
+    Network identifier (`chainId`) is strictly bound to canonical signature payloads, transaction hash calculations, REST API payloads, P2P handshakes, and **directly embedded into the Block header structure, SHA-256 block hash calculation, and database schema**, preventing cross-chain block replaying.
 15. **Dynamic `isSynced` State Computation**:
     Remote peer heights are tracked per `PeerConnection` instance, and synchronization status evaluates only currently active connections. Handshake height spoofing no longer causes persistent desync state.
 16. **Reorg Pre-Validation & Fast-Sync Pagination**:
@@ -957,7 +968,27 @@ NodeChain implements algorithmic defenses against common blockchain attacks:
 17. **Transaction History Anti-Poisoning**:
     Transactions carrying negative nonces (`nonce < 0`) or abnormal timestamps ($timestamp \le 0$ or $> \text{now} + 600\text{s}$) are rejected in early formatting checks before invoking heavy Ed25519 signature verification.
 18. **Peer Table Protection & Concurrency Ceilings**:
-    The `peers` table is capped at 256 records, stale nodes (> 7 days) are auto-pruned, and outbound connection attempts are restricted to at most 32 concurrent threads.
+    The `peers` table is capped at 256 records, unreachable nodes are immediately pruned upon connection failure (`peerRepository.delete(host, port)`), and outbound connection attempts are restricted to at most 32 concurrent peers.
+19. **P2P Slowloris DoS Defense (Frame Read Deadlines)**:
+    Socket timeout is reduced to 10 seconds. Inbound frame reads in `NodePacket.readFullyWithTimeout` enforce a strict 10-second completion deadline, disconnecting peers that trickle bytes slowly to exhaust worker threads.
+20. **Eclipse Attack Mitigation & Inbound Connection Quotas**:
+    Inbound connections per external IP address are capped at 2. Total inbound sockets are bounded by `MAX_INBOUND_CONNECTIONS = 48` within the 64-slot limit, reserving at least 16 outbound slots exclusively for honest peer nodes.
+21. **SSRF & Peer Poisoning Network Filtering**:
+    `P2pClientManager.isSafePeerAddress` blocks connections to privileged ports (< 1024), sensitive infrastructure ports (22, 23, 25, 80, 443, 3306, 5432, 6379, 27017, 11211, 8080), RFC 1918 private subnets (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), broadcast IPs, and cloud metadata ranges (`169.254.0.0/16`), while allowing localhost for isolated testing clusters.
+22. **Fox Address CRC32 Checksum Validation**:
+    The last 8 hex characters of each address encode a standard IEEE 802.3 CRC32 checksum over the first 56 characters, catching typos and invalid addresses at `isValidAddress()` before network broadcast or database persistence.
+23. **Anti-Spam Minimum Relay Fee (`MIN_RELAY_FEE = 1L`)**:
+    Transactions must supply at least 1 atomic unit in fees. Zero-fee spam transactions are rejected at the mempool gate with `409 Conflict`.
+24. **Concurrent SQLite WAL Connection Pool (HikariCP Pool = 10 + connectionInitSql)**:
+    Database connection pool is configured to 10 connections with `PRAGMA busy_timeout = 10000;` guaranteed on all pooled connections via `connectionInitSql`, enabling parallel non-blocking read access for REST API endpoints alongside SQLite WAL writes.
+25. **Linear Mempool Eviction $O(N)$ (Anti-Algorithmic DoS)**:
+    The lowest-fee mempool eviction algorithm (`evictLowestFeeTx`) is optimized to linear time $O(N)$ using sender tail nonce indexing, eliminating $O(N^2)$ node stalls under global lock when the mempool reaches capacity (10,000 txs).
+26. **Strict MTP-11 Fork Consensus (Anti-Time-Warp)**:
+    Reorganization branch header validation in `validateBranch` strictly enforces the median timestamp of the previous 11 blocks (`getBranchMedianTimePast`), preventing timestamp manipulation to artificially lower difficulty.
+27. **Miner Wallet Key Protection (POSIX 0600)**:
+    Miner keys in `nodewallet.dat` are saved with restrictive file permissions `0600` (`rw-------`) on POSIX filesystems, preventing unauthorized local users from reading private keys.
+28. **Strict CORS & Unified Jackson Deserialization**:
+    Wildcard CORS `*` is disabled in REST API (restricted to localhost, 127.0.0.1, and null for local clients), and internal P2P Jackson deserializer disables `ACCEPT_FLOAT_AS_INT` identically to the REST API.
 
 ---
 
@@ -1042,8 +1073,9 @@ nodechain/
 │   ├── index.html            # Single HTML entry point (dark theme, responsive)
 │   ├── css/
 │   │   └── style.css         # Custom lightweight styling
+│   ├── vendor/
+│   │   └── mithril.min.js    # Reactive micro-framework (8 KiB gzipped)
 │   └── js/
-│       ├── mithril.min.js    # Reactive micro-framework (8 KiB gzipped)
 │       ├── crypto.js         # Web Crypto API module (Ed25519)
 │       ├── api.js            # NodeChain REST API client
 │       ├── state.js          # Reactive state store with nonce pipelining

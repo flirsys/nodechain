@@ -42,6 +42,7 @@ public class P2pClientManager {
 
   private static final Logger log = LoggerFactory.getLogger(P2pClientManager.class);
   public static final int MAX_CONNECTIONS = 64;
+  public static final int MAX_INBOUND_CONNECTIONS = 48;
   private static final long MIN_REQUEST_INTERVAL_MS = 100L;
   private static final String VERSION = "1.0.0";
 
@@ -156,8 +157,7 @@ public class P2pClientManager {
 
   // Инициирует исходящее TCP-соединение с удаленным пиром с атомарным резервированием слота
   public void connectToPeer(String host, int port) {
-    if (host == null || port <= 0 || port > 65535) return;
-    if (isLocalAddress(host) && (port == nodeConfig.p2pPort || port == nodeConfig.serverPort)) return;
+    if (!isSafePeerAddress(host, port, nodeConfig)) return;
     for (PeerConnection conn : connections) {
       if (conn.getRemoteHost().equals(host) && conn.getRemotePort() == port) return;
     }
@@ -166,7 +166,7 @@ public class P2pClientManager {
     Socket socket = new Socket();
     try {
       socket.connect(new java.net.InetSocketAddress(host, port), 5000);
-      socket.setSoTimeout(45000);
+      socket.setSoTimeout(10000);
       PeerConnection conn = new PeerConnection(socket, this, true);
       conn.remotePort = port;
       connections.add(conn);
@@ -262,11 +262,17 @@ public class P2pClientManager {
         String remoteIp = socket.getInetAddress() != null ? socket.getInetAddress().getHostAddress() : "";
         if (!isLocalAddress(remoteIp)) {
           long ipConns = connections.stream().filter(c -> c.getRemoteHost().equals(remoteIp)).count();
-          if (ipConns >= 8) {
+          if (ipConns >= 2) {
             socket.close();
             log.warn("Rejected incoming P2P connection from {}: limit per IP reached", remoteIp);
             continue;
           }
+        }
+        long inboundCount = connections.stream().filter(c -> !c.isOutbound).count();
+        if (inboundCount >= MAX_INBOUND_CONNECTIONS) {
+          socket.close();
+          log.warn("Rejected incoming P2P connection: inbound quota of {} reached", MAX_INBOUND_CONNECTIONS);
+          continue;
         }
         if (!connectionSlots.tryAcquire()) {
           socket.close();
@@ -346,6 +352,37 @@ public class P2pClientManager {
       || "0:0:0:0:0:0:0:1".equals(host) || "::1".equals(host);
   }
 
+  // Проверяет адрес и порт пира на безопасность от SSRF и сканирования приватных сетей
+  public static boolean isSafePeerAddress(String host, int port, NodeConfig cfg) {
+    if (host == null || host.isBlank() || port < 1024 || port > 65535) return false;
+    String h = host.trim().toLowerCase();
+    if (h.equals("0.0.0.0") || h.equals("255.255.255.255") || h.startsWith("169.254.") || h.contains("metadata")) return false;
+    if (!isLocalAddress(h) && isPrivateSubnet(h)) return false;
+    if (isSensitivePort(port, cfg)) return false;
+    if (isLocalAddress(h) && cfg != null && (port == cfg.p2pPort || port == cfg.serverPort)) return false;
+    return true;
+  }
+
+  private static boolean isPrivateSubnet(String ip) {
+    if (ip.startsWith("10.") || ip.startsWith("192.168.") || ip.startsWith("fc") || ip.startsWith("fd") || ip.startsWith("fe80:")) return true;
+    if (ip.startsWith("172.")) {
+      String[] parts = ip.split("\\.");
+      if (parts.length >= 2) {
+        try {
+          int second = Integer.parseInt(parts[1]);
+          if (second >= 16 && second <= 31) return true;
+        } catch (NumberFormatException ignored) {}
+      }
+    }
+    return false;
+  }
+
+  private static boolean isSensitivePort(int port, NodeConfig cfg) {
+    if (cfg != null && (port == cfg.p2pPort || port == cfg.serverPort)) return true;
+    return port == 22 || port == 23 || port == 25 || port == 80 || port == 443
+        || port == 3306 || port == 5432 || port == 6379 || port == 27017 || port == 11211 || port == 8080;
+  }
+
   private boolean isRateLimited(PeerConnection conn, byte op) {
     if (op == OpCode.PONG) return false;
     String host = conn.getRemoteHost();
@@ -397,11 +434,8 @@ public class P2pClientManager {
     int count = 0;
     for (PeerInfo p : payload.peers()) {
       if (count >= 20 || peerRepository.count() >= 256) break;
-      if (p == null || p.port() <= 0 || p.port() > 65535 || p.host() == null) continue;
-      String host = p.host().trim();
-      if (host.isEmpty() || host.length() > 255) continue;
-      if (isLocalAddress(host) && (p.port() == nodeConfig.p2pPort || p.port() == nodeConfig.serverPort)) continue;
-      peerRepository.saveOrUpdate(new PeerInfo(host, p.port(), 0L));
+      if (p == null || !isSafePeerAddress(p.host(), p.port(), nodeConfig)) continue;
+      peerRepository.saveOrUpdate(new PeerInfo(p.host().trim(), p.port(), 0L));
       count++;
     }
   }

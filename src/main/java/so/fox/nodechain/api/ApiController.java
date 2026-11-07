@@ -23,8 +23,7 @@ import so.fox.nodechain.p2p.P2pClientManager;
 
 // REST API контроллер публичных запросов ноды блокчейна
 @RestController
-// @CrossOrigin(originPatterns = { "http://localhost:*", "http://127.0.0.1:*", "http://localhost", "http://127.0.0.1", "null" })
-@CrossOrigin(originPatterns = "*")
+@CrossOrigin(originPatterns = { "http://localhost:*", "http://127.0.0.1:*", "http://localhost", "http://127.0.0.1", "null" })
 @RequestMapping("/api/v1")
 public class ApiController {
 

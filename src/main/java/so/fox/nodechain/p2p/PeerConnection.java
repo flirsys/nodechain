@@ -31,7 +31,7 @@ public class PeerConnection implements Runnable {
   // Создает соединение с пиром с явным указанием направления подключения (исходящее/входящее)
   public PeerConnection(Socket socket, P2pClientManager manager, boolean isOutbound) throws IOException {
     this.socket = socket;
-    this.socket.setSoTimeout(45000);
+    this.socket.setSoTimeout(10000);
     this.manager = manager;
     this.isOutbound = isOutbound;
     this.in = new BufferedInputStream(socket.getInputStream());

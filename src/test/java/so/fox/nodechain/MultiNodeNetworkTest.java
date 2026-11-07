@@ -250,7 +250,7 @@ public class MultiNodeNetworkTest {
 
     // Формируем фальшивый блок: неверный Proof of Work (начинается с "f", а не с нулей "00")
     Block latest = nodeHonest1.blockchain.getLatestBlockHeader();
-    Block fakeBlock = new Block(latest.height + 1, latest.hash, "f5ox000000000000000000000000000000000000000000000000000000000000", Collections.emptyList(), 2);
+    Block fakeBlock = new Block(latest.height + 1, nodeHonest1.config.chainId, latest.hash, nodeHonest1.wallet.address, Collections.emptyList(), 2);
     fakeBlock.hash = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
 
     // Отправляем фальшивый блок на Node 1

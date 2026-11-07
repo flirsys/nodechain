@@ -80,7 +80,7 @@ public class ConsensusAndSecurityTest {
    */
   @Test
   public void testInterruptedMiningAbortsCleanly() {
-    Block b = new Block(999, "prev", nodeWalletService.address, List.of(), 4);
+    Block b = new Block(999, nodeConfig.chainId, "prev", nodeWalletService.address, List.of(), 4);
     Thread.currentThread().interrupt();
     boolean isMined = b.mineBlock(20);
     Assertions.assertFalse(isMined, "Interrupted thread must return false from mineBlock");
@@ -101,8 +101,8 @@ public class ConsensusAndSecurityTest {
     String sig = CryptoUtil.sign(kp.getPrivate(), data);
     Transaction tx = new Transaction(nodeConfig.chainId, addr1, addr2, 10L, 5L, 0L, CryptoUtil.encodePublicKey(kp.getPublic()), sig, "");
 
-    boolean areUnique = ConsensusUtil.areTransactionsUnique(List.of(tx, tx));
-    Assertions.assertFalse(areUnique, "Block with duplicate tx hashes must be rejected");
+    boolean isUnique = ConsensusUtil.isTransactionsUnique(List.of(tx, tx));
+    Assertions.assertFalse(isUnique, "Block with duplicate tx hashes must be rejected");
   }
 
   /**
@@ -166,8 +166,8 @@ public class ConsensusAndSecurityTest {
    */
   @Test
   public void testCumulativeChainWorkCalculation() {
-    Block b2 = new Block(1, "0", "m", List.of(), 2);
-    Block b3 = new Block(1, "0", "m", List.of(), 3);
+    Block b2 = new Block(1, nodeConfig.chainId, "0", "m", List.of(), 2);
+    Block b3 = new Block(1, nodeConfig.chainId, "0", "m", List.of(), 3);
     List<Block> chain5 = List.of(b2, b2, b2, b2, b2);
     List<Block> chain6 = List.of(b2, b2, b2, b2, b2, b2);
     List<Block> chainHighDiff = List.of(b3);
@@ -289,7 +289,7 @@ public class ConsensusAndSecurityTest {
     Assertions.assertNotNull(mined);
 
     Block duplicateBlock = new Block(
-      mined.height + 1, mined.hash, nodeWalletService.address,
+      mined.height + 1, nodeConfig.chainId, mined.hash, nodeWalletService.address,
       List.of(tx), nodeConfig.difficulty
     );
     duplicateBlock.mineBlock(nodeConfig.difficulty);

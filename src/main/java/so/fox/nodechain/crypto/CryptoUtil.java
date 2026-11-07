@@ -13,6 +13,7 @@ import java.security.spec.X509EncodedKeySpec;
 import java.util.Base64;
 import java.util.HexFormat;
 import java.util.regex.Pattern;
+import java.util.zip.CRC32;
 
 // Утилитный класс криптографических операций: Ed25519, SHA-256, подписи и fox-адреса
 public final class CryptoUtil {
@@ -68,7 +69,7 @@ public final class CryptoUtil {
     return Base64.getEncoder().encodeToString(privKey.getEncoded());
   }
 
-  // Вычисляет уникальный fox-адрес из открытого ключа
+  // Вычисляет уникальный fox-адрес из открытого ключа со встроенной контрольной суммой CRC32
   public static String getAddressFromPublicKey(PublicKey pubKey) {
     if (pubKey == null) return null;
     byte[] hash = sha256Bytes(pubKey.getEncoded());
@@ -88,17 +89,32 @@ public final class CryptoUtil {
     arr[posF] = 'f';
     arr[posO] = 'o';
     arr[posX] = 'x';
+
+    String payload = new String(arr, 0, 56);
+    String checksum = computeChecksumHex(payload);
+    System.arraycopy(checksum.toCharArray(), 0, arr, 56, 8);
+
     return new String(arr);
   }
 
-  // Проверяет валидность формата fox-адреса сети (регистронезависимо)
+  // Проверяет валидность формата fox-адреса сети и контрольную сумму (регистронезависимо)
   public static boolean isValidAddress(String addr) {
     if (addr == null || addr.length() != 64) return false;
     String lower = addr.toLowerCase();
-    return ADDRESS_PATTERN.matcher(lower).matches()
-      && lower.indexOf('f') >= 0
-      && lower.indexOf('o') >= 0
-      && lower.indexOf('x') >= 0;
+    if (!ADDRESS_PATTERN.matcher(lower).matches()) return false;
+    if (lower.indexOf('f') < 0 || lower.indexOf('o') < 0 || lower.indexOf('x') < 0) return false;
+
+    String payload = lower.substring(0, 56);
+    String expected = computeChecksumHex(payload);
+    return lower.substring(56).equalsIgnoreCase(expected);
+  }
+
+  // Вычисляет 8-символьную hex контрольную сумму CRC32
+  public static String computeChecksumHex(String payload) {
+    if (payload == null) return "";
+    CRC32 crc = new CRC32();
+    crc.update(payload.getBytes(StandardCharsets.UTF_8));
+    return String.format("%08x", crc.getValue());
   }
 
   // Создает цифровую подпись данных алгоритмом Ed25519

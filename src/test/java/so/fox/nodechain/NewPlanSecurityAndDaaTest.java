@@ -38,11 +38,11 @@ public class NewPlanSecurityAndDaaTest {
     cfg.maxDifficulty = 16;
 
     long baseTime = 1_000_000_000L;
-    Block anchor = new Block(0, "0", "miner", Collections.emptyList(), 4);
+    Block anchor = new Block(0, "foxchain-main-1", "0", "miner", Collections.emptyList(), 4);
     anchor.timestamp = baseTime;
 
     // 10 блоков сгенерированы за 20 секунд вместо целевых 100 секунд (< target / 2)
-    Block latest = new Block(9, "prev", "miner", Collections.emptyList(), 4);
+    Block latest = new Block(9, "foxchain-main-1", "prev", "miner", Collections.emptyList(), 4);
     latest.timestamp = baseTime + 20_000L;
 
     int nextDiff = ConsensusUtil.calculateNextDifficulty(latest, anchor, cfg);
@@ -63,11 +63,11 @@ public class NewPlanSecurityAndDaaTest {
     cfg.maxDifficulty = 16;
 
     long baseTime = 1_000_000_000L;
-    Block anchor = new Block(0, "0", "miner", Collections.emptyList(), 4);
+    Block anchor = new Block(0, "foxchain-main-1", "0", "miner", Collections.emptyList(), 4);
     anchor.timestamp = baseTime;
 
     // 10 блоков сгенерированы за 300 секунд вместо целевых 100 секунд (> target * 2)
-    Block latest = new Block(9, "prev", "miner", Collections.emptyList(), 4);
+    Block latest = new Block(9, "foxchain-main-1", "prev", "miner", Collections.emptyList(), 4);
     latest.timestamp = baseTime + 300_000L;
 
     int nextDiff = ConsensusUtil.calculateNextDifficulty(latest, anchor, cfg);
@@ -87,18 +87,18 @@ public class NewPlanSecurityAndDaaTest {
     cfg.maxDifficulty = 8;
 
     long baseTime = 1_000_000_000L;
-    Block anchor = new Block(0, "0", "miner", Collections.emptyList(), 2);
+    Block anchor = new Block(0, "foxchain-main-1", "0", "miner", Collections.emptyList(), 2);
     anchor.timestamp = baseTime;
 
     // Медленный майнинг на границе minDifficulty не должен опускать сложность ниже minDifficulty (2)
-    Block latestMin = new Block(9, "prev", "miner", Collections.emptyList(), 2);
+    Block latestMin = new Block(9, "foxchain-main-1", "prev", "miner", Collections.emptyList(), 2);
     latestMin.timestamp = baseTime + 500_000L;
     int clampedMin = ConsensusUtil.calculateNextDifficulty(latestMin, anchor, cfg);
     Assertions.assertEquals(2, clampedMin);
 
     // Быстрый майнинг на границе maxDifficulty не должен поднимать сложность выше maxDifficulty (8)
     anchor.difficulty = 8;
-    Block latestMax = new Block(9, "prev", "miner", Collections.emptyList(), 8);
+    Block latestMax = new Block(9, "foxchain-main-1", "prev", "miner", Collections.emptyList(), 8);
     latestMax.timestamp = baseTime + 5_000L;
     int clampedMax = ConsensusUtil.calculateNextDifficulty(latestMax, anchor, cfg);
     Assertions.assertEquals(8, clampedMax);
@@ -168,8 +168,8 @@ public class NewPlanSecurityAndDaaTest {
   @Test
   @DisplayName("Consensus: Суммирование работы цепи по формуле 16^diff каждого блока")
   public void testExactChainWorkSum() {
-    Block b1 = new Block(1, "0", "m1", Collections.emptyList(), 2);
-    Block b2 = new Block(2, "prev", "m2", Collections.emptyList(), 4);
+    Block b1 = new Block(1, "foxchain-main-1", "0", "m1", Collections.emptyList(), 2);
+    Block b2 = new Block(2, "foxchain-main-1", "prev", "m2", Collections.emptyList(), 4);
 
     // b1.work = 16^2 = 256; b2.work = 16^4 = 65536; total = 65792
     java.math.BigInteger totalWork = ConsensusUtil.calculateChainWork(java.util.List.of(b1, b2), 4);
@@ -184,27 +184,27 @@ public class NewPlanSecurityAndDaaTest {
   public void testAttackerFakedDifficultyBlockRejected() {
     KeyPair kp = CryptoUtil.generateKeyPair();
     String miner = CryptoUtil.getAddressFromPublicKey(kp.getPublic());
-    Block genesis = Block.createGenesis(miner, 4);
+    Block genesis = Block.createGenesis("foxchain-main-1", miner, 4, 0L);
     long maxTime = System.currentTimeMillis() + 600_000L;
 
     // 1. Злоумышленник майнит блок со сложностью 1 вместо требуемых сетью 4
-    Block badDiffBlock = new Block(1, genesis.hash, miner, Collections.emptyList(), 1);
+    Block badDiffBlock = new Block(1, "foxchain-main-1", genesis.hash, miner, Collections.emptyList(), 1);
     badDiffBlock.mineBlock(1);
     Assertions.assertTrue(badDiffBlock.hash.startsWith("0"));
 
     // Нода требует сложность 4 (expectedDiff = 4). Блок должен быть отклонен!
-    boolean isValid = ConsensusUtil.isValidBlockHeader(genesis, badDiffBlock, 4, maxTime);
+    boolean isValid = ConsensusUtil.isValidBlockHeader(genesis, badDiffBlock, 4, maxTime, "foxchain-main-1", 0L);
     Assertions.assertFalse(isValid, "Блок со сложностью 1 обязан быть отклонен, если консенсус требует 4");
 
     // 2. Злоумышленник майнит блок со сложностью 0
-    Block zeroDiffBlock = new Block(1, genesis.hash, miner, Collections.emptyList(), 0);
+    Block zeroDiffBlock = new Block(1, "foxchain-main-1", genesis.hash, miner, Collections.emptyList(), 0);
     zeroDiffBlock.mineBlock(0);
-    boolean isZeroValid = ConsensusUtil.isValidBlockHeader(genesis, zeroDiffBlock, 4, maxTime);
+    boolean isZeroValid = ConsensusUtil.isValidBlockHeader(genesis, zeroDiffBlock, 4, maxTime, "foxchain-main-1", 0L);
     Assertions.assertFalse(isZeroValid, "Блок со сложностью 0 обязан быть отклонен");
 
     // 3. Злоумышленник указал в поле difficulty = 4, но сгенерировал хеш только с 1 нулем
     badDiffBlock.difficulty = 4;
-    boolean isSpoofedValid = ConsensusUtil.isValidBlockHeader(genesis, badDiffBlock, 4, maxTime);
+    boolean isSpoofedValid = ConsensusUtil.isValidBlockHeader(genesis, badDiffBlock, 4, maxTime, "foxchain-main-1", 0L);
     Assertions.assertFalse(isSpoofedValid, "Хеш с 1 нулем не может удовлетворить проверку сложности 4");
   }
 

@@ -72,7 +72,8 @@ public class ClaudeReviewVerificationTest {
       Block minedByA = nodeA.blockchain.mineBlock();
       Assertions.assertNotNull(minedByA);
 
-      // Теперь Node B подключается к Node A и принимает генезис-блок Node A:
+      // Теперь Node B указывает адрес создателя Node A как доверенный генезис и принимает его:
+      nodeB.config.genesisAddress = nodeA.wallet.address;
       boolean adopted = nodeB.blockchain.adoptPeerGenesisBlock(genesisA);
       Assertions.assertTrue(adopted, "Чистая нода B должна успешно принять генезис-блок ноды A");
 
@@ -226,7 +227,7 @@ public class ClaudeReviewVerificationTest {
     Transaction tx1 = new Transaction("foxchain-main-1", addrA, addrB, 10L, 5L, 0L, CryptoUtil.encodePublicKey(key.getPublic()), "sig1", "tx1");
     Transaction tx2 = new Transaction("foxchain-main-1", addrA, addrB, 20L, 5L, 1L, CryptoUtil.encodePublicKey(key.getPublic()), "sig2", "tx2");
 
-    Block b = new Block(1, "0", addrA, List.of(tx1, tx2), 4);
+    Block b = new Block(1, "foxchain-main-1", "0", addrA, List.of(tx1, tx2), 4);
     String root = b.calculateMerkleRoot();
 
     // Проверяем RFC 6962 доменное разделение:

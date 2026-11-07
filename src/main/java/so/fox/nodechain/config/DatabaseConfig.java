@@ -19,14 +19,15 @@ public class DatabaseConfig {
     this.nodeConfig = nodeConfig;
   }
 
-  // Настройка пула соединений HikariCP с одним активным коннектом для SQLite
+  // Настройка пула соединений HikariCP для SQLite в режиме WAL с поддержкой параллельного чтения
   @Bean
   public DataSource dataSource() {
     HikariConfig cfg = new HikariConfig();
     cfg.setDriverClassName("org.sqlite.JDBC");
     cfg.setJdbcUrl("jdbc:sqlite:" + nodeConfig.dbPath);
-    cfg.setMaximumPoolSize(1);
-    cfg.setConnectionTimeout(30000);
+    cfg.setConnectionInitSql("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 10000;");
+    cfg.setMaximumPoolSize(10);
+    cfg.setConnectionTimeout(15000);
     cfg.setIdleTimeout(600000);
     cfg.setMaxLifetime(1800000);
     return new HikariDataSource(cfg);
@@ -48,34 +49,27 @@ public class DatabaseConfig {
 
   // Создает необходимые таблицы и индексы в SQLite
   public static void initDatabase(JdbcTemplate jdbc) {
-    jdbc.execute("PRAGMA journal_mode = WAL;");
-    jdbc.execute("PRAGMA synchronous = NORMAL;");
-    jdbc.execute("PRAGMA busy_timeout = 5000;");
-
     jdbc.execute("""
       CREATE TABLE IF NOT EXISTS blocks (
         height INTEGER PRIMARY KEY,
+        chain_id TEXT NOT NULL,
         hash TEXT UNIQUE NOT NULL,
         previous_hash TEXT NOT NULL,
         merkle_root TEXT NOT NULL,
         miner_address TEXT NOT NULL,
         tx_count INTEGER NOT NULL,
         timestamp INTEGER NOT NULL,
-        difficulty INTEGER NOT NULL DEFAULT 4,
+        difficulty INTEGER NOT NULL,
         nonce INTEGER NOT NULL
       );
     """);
-
-    try {
-      jdbc.execute("ALTER TABLE blocks ADD COLUMN difficulty INTEGER NOT NULL DEFAULT 4;");
-    } catch (Exception ignored) {}
 
     jdbc.execute("""
       CREATE TABLE IF NOT EXISTS transactions (
         hash TEXT PRIMARY KEY,
         block_height INTEGER,
         block_hash TEXT,
-        chain_id TEXT,
+        chain_id TEXT NOT NULL,
         tx_from TEXT NOT NULL,
         tx_to TEXT NOT NULL,
         amount INTEGER NOT NULL,
@@ -89,10 +83,6 @@ public class DatabaseConfig {
         tx_index INTEGER DEFAULT 0
       );
     """);
-
-    try {
-      jdbc.execute("ALTER TABLE transactions ADD COLUMN chain_id TEXT;");
-    } catch (Exception ignored) {}
     jdbc.execute("CREATE INDEX IF NOT EXISTS idx_tx_from ON transactions(tx_from);");
     jdbc.execute("CREATE INDEX IF NOT EXISTS idx_tx_to ON transactions(tx_to);");
     jdbc.execute("CREATE INDEX IF NOT EXISTS idx_tx_block_height ON transactions(block_height);");

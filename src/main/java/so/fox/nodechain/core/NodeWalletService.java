@@ -77,7 +77,7 @@ public class NodeWalletService {
 
   private void generateAndSaveWallet(Path path) {
     KeyPair kp = CryptoUtil.generateKeyPair();
-    if (kp == null) return;
+    if (kp == null) throw new IllegalStateException("Не удалось сгенерировать ключи кошелька");
     this.publicKey = kp.getPublic();
     this.privateKey = kp.getPrivate();
     this.address = CryptoUtil.getAddressFromPublicKey(publicKey);
@@ -86,9 +86,16 @@ public class NodeWalletService {
       + address + System.lineSeparator();
     try {
       Files.writeString(path, content);
+      try {
+        java.nio.file.attribute.PosixFileAttributeView posix = Files.getFileAttributeView(path, java.nio.file.attribute.PosixFileAttributeView.class);
+        if (posix != null) {
+          posix.setPermissions(java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"));
+        }
+      } catch (Exception ignored) {}
       log.info("Generated new node wallet: {}", path.toAbsolutePath());
     } catch (IOException err) {
       log.error("Failed to write node wallet: {}", err.getMessage());
+      throw new IllegalStateException("Не удалось сохранить кошелек ноды: " + path.toAbsolutePath(), err);
     }
   }
 }

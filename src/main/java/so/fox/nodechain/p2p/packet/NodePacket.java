@@ -1,13 +1,16 @@
 package so.fox.nodechain.p2p.packet;
 
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
+import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.SocketTimeoutException;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
 
@@ -20,7 +23,8 @@ public class NodePacket {
   public static final int MAX_PAYLOAD_SIZE = 4 * 1024 * 1024;
   public static final int MAX_CONTROL_PAYLOAD_SIZE = 64 * 1024;
 
-  private static final ObjectMapper MAPPER = new ObjectMapper();
+  private static final ObjectMapper MAPPER = new ObjectMapper()
+    .disable(DeserializationFeature.ACCEPT_FLOAT_AS_INT);
 
   public final byte flag;
   public final int requestId;
@@ -119,10 +123,24 @@ public class NodePacket {
     }
 
     byte[] raw = new byte[len];
-    dis.readFully(raw);
+    readFullyWithTimeout(dis, raw, 10_000L);
 
     byte[] body = (flag == FLAG_GZIP && len > 0) ? decompressGzip(raw) : raw;
     return new NodePacket(op, reqId, flag, body, raw, flag);
+  }
+
+  // Читает заданное количество байт с жестким таймаутом кадра для защиты от Slowloris
+  private static void readFullyWithTimeout(DataInputStream dis, byte[] b, long timeoutMs) throws IOException {
+    int total = 0;
+    long deadline = System.currentTimeMillis() + timeoutMs;
+    while (total < b.length) {
+      if (System.currentTimeMillis() > deadline) {
+        throw new SocketTimeoutException("Slowloris DoS protection: read timeout exceeded " + timeoutMs + "ms");
+      }
+      int r = dis.read(b, total, b.length - total);
+      if (r < 0) throw new EOFException("Connection closed prematurely by peer");
+      total += r;
+    }
   }
 
   private static WireCache computeWireCache(byte[] p) {

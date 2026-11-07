@@ -25,6 +25,15 @@ public class CryptoUtilTest {
     Assertions.assertTrue(addr.contains("f"));
     Assertions.assertTrue(addr.contains("o"));
     Assertions.assertTrue(addr.contains("x"));
+
+    // Проверяем устойчивость контрольной суммы: опечатка в любом символе инвалидирует адрес
+    char[] corrupted = addr.toCharArray();
+    corrupted[10] = (corrupted[10] == 'a') ? 'b' : 'a';
+    Assertions.assertFalse(CryptoUtil.isValidAddress(new String(corrupted)), "Опечатка в теле адреса должна отклоняться контрольной суммой");
+
+    char[] corruptedChecksum = addr.toCharArray();
+    corruptedChecksum[60] = (corruptedChecksum[60] == '0') ? '1' : '0';
+    Assertions.assertFalse(CryptoUtil.isValidAddress(new String(corruptedChecksum)), "Искажение контрольной суммы должно отклоняться");
   }
 
   /**
