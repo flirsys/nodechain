@@ -3,13 +3,16 @@ package so.fox.nodechain.config;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import javax.sql.DataSource;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.DependsOn;
+import org.springframework.context.annotation.Primary;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.transaction.PlatformTransactionManager;
 
-// Конфигурация базы данных SQLite с пулом соединений HikariCP.
+// Конфигурация базы данных SQLite с разделением на пулы чтения и записи (WAL).
 @Configuration
 public class DatabaseConfig {
 
@@ -81,10 +84,12 @@ public class DatabaseConfig {
     this.nodeConfig = nodeConfig;
   }
 
-  // Настройка пула соединений HikariCP для SQLite в режиме WAL с поддержкой параллельного чтения.
-  @Bean
-  public DataSource dataSource() {
+  // Настройка пула записи HikariCP для SQLite (1 эксклюзивное соединение во избежание SQLITE_BUSY).
+  @Primary
+  @Bean(name = {"writeDataSource", "dataSource"})
+  public DataSource writeDataSource() {
     HikariConfig cfg = new HikariConfig();
+    cfg.setPoolName("SQLite-WritePool");
     cfg.setDriverClassName("org.sqlite.JDBC");
     cfg.setJdbcUrl("jdbc:sqlite:" + nodeConfig.dbPath);
     cfg.setConnectionInitSql("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 10000;");
@@ -95,17 +100,40 @@ public class DatabaseConfig {
     return new HikariDataSource(cfg);
   }
 
-  // Инициализирует JdbcTemplate и схему таблиц блокчейна.
-  @Bean
-  public JdbcTemplate jdbcTemplate(DataSource dataSource) {
+  // Настройка пула чтения HikariCP для SQLite (до 4 параллельных неблокирующих читателей в WAL).
+  @DependsOn("writeJdbcTemplate")
+  @Bean(name = "readDataSource")
+  public DataSource readDataSource() {
+    HikariConfig cfg = new HikariConfig();
+    cfg.setPoolName("SQLite-ReadPool");
+    cfg.setDriverClassName("org.sqlite.JDBC");
+    cfg.setJdbcUrl("jdbc:sqlite:" + nodeConfig.dbPath);
+    cfg.setConnectionInitSql("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 10000; PRAGMA query_only = ON;");
+    cfg.setMaximumPoolSize(4);
+    cfg.setConnectionTimeout(15000);
+    cfg.setIdleTimeout(600000);
+    cfg.setMaxLifetime(1800000);
+    return new HikariDataSource(cfg);
+  }
+
+  // Инициализирует шаблон записи JdbcTemplate и схему таблиц блокчейна.
+  @Primary
+  @Bean(name = {"writeJdbcTemplate", "jdbcTemplate"})
+  public JdbcTemplate writeJdbcTemplate(@Qualifier("writeDataSource") DataSource dataSource) {
     JdbcTemplate tmpl = new JdbcTemplate(dataSource);
     initDatabase(tmpl);
     return tmpl;
   }
 
-  // Настройка менеджера транзакций для поддержки @Transactional на SQLite DataSource.
+  // Инициализирует шаблон чтения JdbcTemplate для параллельных запросов.
+  @Bean(name = "readJdbcTemplate")
+  public JdbcTemplate readJdbcTemplate(@Qualifier("readDataSource") DataSource dataSource) {
+    return new JdbcTemplate(dataSource);
+  }
+
+  // Настройка менеджера транзакций для поддержки @Transactional на SQLite DataSource записи.
   @Bean
-  public PlatformTransactionManager transactionManager(DataSource dataSource) {
+  public PlatformTransactionManager transactionManager(@Qualifier("writeDataSource") DataSource dataSource) {
     return new DataSourceTransactionManager(dataSource);
   }
 }

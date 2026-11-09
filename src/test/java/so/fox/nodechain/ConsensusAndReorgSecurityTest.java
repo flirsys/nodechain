@@ -80,17 +80,17 @@ public class ConsensusAndReorgSecurityTest {
     cleanDb();
   }
 
-  // Проверяет, что манипуляция временем майнером (замороженное MTP) не повышает сложность (difficulty ratchet).
+  // Проверяет, что при сверхбыстром майнинге алгоритм DAA повышает сложность вверх.
   @Test
-  @DisplayName("Консенсус: замороженное медианное время (MTP-11) не накручивает сложность вверх")
-  public void testFrozenTimestampsDoNotRatchetDifficulty() {
+  @DisplayName("Консенсус: сверхбыстрый майнинг корректно повышает сложность (DAA adjustment)")
+  public void testFastMiningIncreasesDifficulty() {
     Block prev = service.getLatestBlockHeader();
     long t = prev.timestamp;
 
     for (int i = 1; i <= 10; i++) {
       int diff = service.getNextBlockDifficulty(prev);
       Block b = new Block(prev.height + 1, config.chainId, prev.hash, config.genesisAddress, List.of(), diff);
-      t += 1L; // Шаг времени всего +1 мс
+      t += 1L; // Шаг времени всего +1 мс (сверхбыстрый майнинг)
       b.timestamp = t;
       b.merkleRoot = b.calculateMerkleRoot();
       b.hash = b.calculateHash();
@@ -100,7 +100,7 @@ public class ConsensusAndReorgSecurityTest {
     }
 
     Assertions.assertEquals(10, prev.height);
-    Assertions.assertEquals(config.difficulty, prev.difficulty, "Сложность не должна расти при замороженном MTP времени");
+    Assertions.assertTrue(prev.difficulty > config.difficulty, "Сложность должна вырасти при сверхбыстром майнинге");
   }
 
   // Проверяет отклонение блоков с недействительным Proof-of-Work доказательством.
@@ -118,24 +118,24 @@ public class ConsensusAndReorgSecurityTest {
 
   // Проверяет отклонение попытки реорганизации глубже предельного лимита MAX_REORG_DEPTH (защита от дальних форков).
   @Test
-  @DisplayName("Защита от 51%: отклонение реорганизации цепи глубиной более 20 блоков")
+  @DisplayName("Защита от 51%: отклонение реорганизации цепи глубиной более MAX_REORG_DEPTH блоков")
   public void testDeepReorganizationExceedingLimitRejected() {
-    // Наращиваем основную цепочку до высоты 25 через штатный майнинг
-    for (int i = 1; i <= 25; i++) {
+    // Наращиваем основную цепочку до высоты 10 через штатный майнинг
+    for (int i = 1; i <= 10; i++) {
       Block mined = service.mineBlock();
       Assertions.assertNotNull(mined, "Блок #" + i + " должен быть успешно смайнен");
     }
-    Assertions.assertEquals(25L, service.getLatestBlockHeader().height);
+    Assertions.assertEquals(10L, service.getLatestBlockHeader().height);
 
-    // Пытаемся применить форк от высоты 2 (глубина отката 23 > 20)
+    // Пытаемся применить форк от высоты 5 (глубина отката 5 > 3)
     List<Block> maliciousFork = new ArrayList<>();
-    Block forkAnchor = service.getBlockByIdentifier("2").value;
+    Block forkAnchor = service.getBlockByIdentifier("5").value;
     Assertions.assertNotNull(forkAnchor);
     Block forkPrev = forkAnchor;
     long t = forkAnchor.timestamp;
-    for (long h = 3; h <= 27; h++) {
+    for (long h = 6; h <= 12; h++) {
       Block fb = new Block(h, config.chainId, forkPrev.hash, config.genesisAddress, List.of(), config.difficulty);
-      fb.timestamp = t + ((h - 2) * 1000L);
+      fb.timestamp = t + ((h - 5) * 1000L);
       fb.merkleRoot = fb.calculateMerkleRoot();
       fb.hash = fb.calculateHash();
       Assertions.assertTrue(fb.mineBlock(config.difficulty));
@@ -144,7 +144,7 @@ public class ConsensusAndReorgSecurityTest {
     }
 
     boolean isReorg = service.reorganizeChain(maliciousFork);
-    Assertions.assertFalse(isReorg, "Реорганизация глубже 20 блоков должна быть заблокирована");
-    Assertions.assertEquals(25L, service.getLatestBlockHeader().height);
+    Assertions.assertFalse(isReorg, "Реорганизация глубже 3 блоков должна быть заблокирована");
+    Assertions.assertEquals(10L, service.getLatestBlockHeader().height);
   }
 }

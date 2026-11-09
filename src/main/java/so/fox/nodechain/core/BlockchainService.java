@@ -15,7 +15,6 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -40,7 +39,7 @@ import so.fox.nodechain.repository.TransactionRepository;
 @Service
 public class BlockchainService {
 
-  public static final int MAX_REORG_DEPTH = 20;
+  public static final int MAX_REORG_DEPTH = 3;
 
   private static final Logger log = LoggerFactory.getLogger(BlockchainService.class);
 

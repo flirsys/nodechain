@@ -67,7 +67,7 @@ flowchart TB
             RepoTx["TransactionRepository"]
             RepoAcc["AccountRepository"]
             RepoPeer["PeerRepository"]
-            SQLite[("SQLite WAL Mode (HikariCP Pool = 10)")]
+            SQLite[("SQLite WAL (Write Pool = 1, Read Pool = 4)")]
         end
     end
 
@@ -133,11 +133,11 @@ To prevent Transaction Malleability and Cross-Chain Replay, signatures are creat
 * **Minimum Relay Fee (`MIN_RELAY_FEE`)**: `1L` atomic unit to prevent spam.
 * **Proof-of-Work**: Block hash `SHA256(height|chainId|previousHash|merkleRoot|minerAddress|timestamp|difficulty|nonce)` must begin with `difficulty` hex zeros.
 * **Difficulty Adjustment Algorithm (DAA)**: Retargeted every `blockchain.difficulty-adjustment-interval` blocks (default 10) against `target-block-time-seconds = 10`.
-* **MTP-11 & Ratchet Protection**: Next block timestamp must be $> \text{MTP-11}$ of past blocks and $\le \text{now} + 30\text{s}$. If the MTP window fails to advance by at least 1s per block (frozen time attack), difficulty ratcheting is prevented.
+* **MTP-11 & Block Timestamps**: Next block timestamp must be $> \text{MTP-11}$ of past blocks and $\le \text{now} + 30\text{s}$. DAA difficulty retargeting rapidly adjusts upwards when block mining accelerates.
 * **Network Checkpoints**: `blockchain.checkpoints=<height>:<hash>,...` enforces strict verification of historical block hashes.
 * **RFC 6962 Merkle Tree**: Domain separation — leaves are prefixed with `00`, internal nodes with `01`.
 * **Halving Algorithm**: Every `blockchain.halving-interval` blocks (210,000), block subsidy halves: `Subsidy = miningReward >> (height / halvingInterval)`. At $\ge 64$ halvings, subsidy becomes 0.
-* **Chain Reorganization**: Follows highest cumulative ChainWork ($\sum 16^{\text{difficulty}}$). Maximum reorg depth is capped at `MAX_REORG_DEPTH = 20` blocks.
+* **Chain Reorganization**: Follows highest cumulative ChainWork ($\sum 16^{\text{difficulty}}$). Maximum reorg depth is capped at `MAX_REORG_DEPTH = 3` blocks.
 
 ---
 
@@ -186,6 +186,7 @@ Nodes communicate using custom binary framing over direct TCP sockets:
 * Connection slots: 64 maximum (inbound capped at 48, reserving 16 outbound slots for honest peers).
 * Quota: Maximum 2 connections per external IP; rate limit: 5,000 tx/s per peer connection.
 * SSRF protection (`isSafePeerAddress`): Blocks RFC 1918 private subnets, system ports, and cloud metadata (`169.254.0.0/16`).
+* Eclipse & Database Poisoning Protection: peers received via gossip (`PEERS_LIST`) are kept strictly in an in-memory candidate queue (`candidatePeers`); writing to the `peers` database table occurs only upon successful Ed25519 cryptographic handshake (`handleHandshake`).
 * Frame read deadline: 10 seconds (Slowloris DoS prevention).
 * GZIP decompression bomb protection: Hard cutoff at 4 MiB.
 
@@ -193,13 +194,15 @@ Nodes communicate using custom binary framing over direct TCP sockets:
 
 ## 🗄 Data Layer: SQLite WAL
 
-Embedded persistence uses `sqlite-jdbc` with a **HikariCP connection pool (10 connections)**:
+Embedded persistence uses `sqlite-jdbc` with separated **HikariCP connection pools**:
+* **Write Pool (1 connection)**: Exclusive write connection eliminating concurrency contention and `SQLITE_BUSY` errors.
+* **Read Pool (4 connections)**: Up to 4 concurrent non-blocking readers in WAL mode with `PRAGMA query_only = ON;`.
 * `PRAGMA journal_mode = WAL;` — Non-blocking concurrent reads during write operations.
 * `PRAGMA synchronous = NORMAL;` — Optimal balance between disk flush speed and reliability.
 * `PRAGMA busy_timeout = 10000;` — Waits up to 10 seconds for locks to resolve.
 * Applied across all connections via `connectionInitSql`.
 
-Tables: `blocks`, `transactions`, `accounts`, and `peers`.
+Tables: `blocks` (chain history), `transactions` (transaction ledger), `accounts` (balances & nonces), and `peers` (verified network nodes).
 
 ---
 

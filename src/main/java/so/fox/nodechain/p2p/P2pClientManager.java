@@ -15,6 +15,7 @@ import java.security.PublicKey;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Pattern;
 import java.util.concurrent.ConcurrentHashMap;
@@ -24,7 +25,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.Semaphore;
-import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
@@ -254,6 +254,7 @@ public class P2pClientManager {
   private final NodeWalletService nodeWalletService;
 
   private final List<PeerConnection> connections = new CopyOnWriteArrayList<>();
+  private final Set<PeerInfo> candidatePeers = ConcurrentHashMap.newKeySet();
   private final Semaphore connectionSlots = new Semaphore(MAX_CONNECTIONS);
   private final Map<String, Long> lastRequestTime = new ConcurrentHashMap<>();
   private final Map<String, Long> seenHandshakeNonces = new ConcurrentHashMap<>();
@@ -362,6 +363,7 @@ public class P2pClientManager {
     } catch (IOException err) {
       connectionSlots.release();
       if (peerRepository != null) peerRepository.delete(targetIp, port);
+      candidatePeers.remove(new PeerInfo(targetIp, port, 0L));
       if (conn != null) conn.close();
       try {
         socket.close();
@@ -517,8 +519,22 @@ public class P2pClientManager {
           attempted++;
         }
       }
+      connectToCandidates();
     } catch (Exception err) {
       log.warn("Error in peer discovery task: {}", err.getMessage());
+    }
+  }
+
+  // Подключается к обнаруженным кандидатам из gossip-списка без сохранения в БД до рукопожатия.
+  private void connectToCandidates() {
+    if (candidatePeers.isEmpty()) return;
+    int attempted = 0;
+    for (PeerInfo p : candidatePeers) {
+      if (attempted >= 16 || getConnectedPeersCount() >= MAX_CONNECTIONS) break;
+      if (!candidatePeers.remove(p)) continue;
+      if (connectToPeer(p.host(), p.port())) {
+        attempted++;
+      }
     }
   }
 
@@ -642,12 +658,11 @@ public class P2pClientManager {
     if (peerRepository == null) return;
     PeersPayload payload = pkt.readJson(PeersPayload.class);
     if (payload == null || payload.peers() == null) return;
-    long knownCount = peerRepository.count();
-    if (knownCount >= 256) return;
+    if (candidatePeers.size() >= 256) return;
     boolean isRemotePeerLocal = isLocalAddress(conn.getRemoteHost());
     int count = 0;
     for (PeerInfo p : payload.peers()) {
-      if (count >= 20 || knownCount + count >= 256) break;
+      if (count >= 20 || candidatePeers.size() >= 256) break;
       if (p == null || p.host() == null) continue;
       String h = p.host().trim();
       if (!IP_LITERAL_PATTERN.matcher(h).matches()) continue;
@@ -655,8 +670,13 @@ public class P2pClientManager {
       if (addr == null) continue;
       boolean isLoopback = addr.isLoopbackAddress() || isLocalAddress(addr.getHostAddress());
       if (isLoopback && !isRemotePeerLocal) continue;
-      peerRepository.saveOrUpdate(new PeerInfo(addr.getHostAddress(), p.port(), 0L));
-      count++;
+      PeerInfo candidate = new PeerInfo(addr.getHostAddress(), p.port(), 0L);
+      if (candidatePeers.add(candidate)) {
+        count++;
+      }
+    }
+    if (count > 0 && scheduler != null && !scheduler.isShutdown()) {
+      scheduler.execute(this::connectToCandidates);
     }
   }
 
@@ -844,6 +864,7 @@ public class P2pClientManager {
     conn.remoteNodeId = msg.nodeId().toLowerCase();
     conn.remotePort = msg.p2pPort();
     conn.setAuthorizedTimeout(30000);
+    candidatePeers.remove(new PeerInfo(conn.getRemoteHost(), msg.p2pPort(), 0L));
     if (peerRepository != null) {
       peerRepository.saveOrUpdate(new PeerInfo(conn.getRemoteHost(), msg.p2pPort(), now));
     }

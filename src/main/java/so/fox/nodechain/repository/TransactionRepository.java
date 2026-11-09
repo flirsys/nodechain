@@ -7,12 +7,14 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
 import so.fox.nodechain.model.Transaction;
 
-// Репозиторий доступа к транзакциям блокчейна в базе данных SQLite.
+// Репозиторий доступа к транзакциям блокчейна в базе данных SQLite с разделением на пулы чтения и записи.
 @Repository
 public class TransactionRepository {
 
@@ -37,10 +39,22 @@ public class TransactionRepository {
     return tx;
   };
 
-  private final JdbcTemplate jdbcTemplate;
+  private final JdbcTemplate writeJdbc;
+  private final JdbcTemplate readJdbc;
 
+  // Основной конструктор репозитория с инъекцией шаблонов записи и чтения.
+  @Autowired
+  public TransactionRepository(
+    @Qualifier("writeJdbcTemplate") JdbcTemplate writeJdbc,
+    @Qualifier("readJdbcTemplate") JdbcTemplate readJdbc
+  ) {
+    this.writeJdbc = writeJdbc;
+    this.readJdbc = readJdbc != null ? readJdbc : writeJdbc;
+  }
+
+  // Конструктор для совместимости с тестами на едином источнике данных.
   public TransactionRepository(JdbcTemplate jdbcTemplate) {
-    this.jdbcTemplate = jdbcTemplate;
+    this(jdbcTemplate, jdbcTemplate);
   }
 
   // Сохраняет или обновляет транзакцию в базе данных.
@@ -50,7 +64,7 @@ public class TransactionRepository {
     if (tx.blockHash != null) tx.blockHash = tx.blockHash.trim().toLowerCase();
     if (tx.from != null) tx.from = tx.from.trim().toLowerCase();
     if (tx.to != null) tx.to = tx.to.trim().toLowerCase();
-    jdbcTemplate.update("""
+    writeJdbc.update("""
       INSERT OR REPLACE INTO transactions (hash, block_height, block_hash, chain_id, tx_from, tx_to,
         amount, fee, nonce, public_key, signature, comment, timestamp, status, tx_index)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -62,7 +76,7 @@ public class TransactionRepository {
   // Находит транзакцию по ее криптографическому хешу.
   public Optional<Transaction> findByHash(String hash) {
     if (hash == null) return Optional.empty();
-    return jdbcTemplate.query("SELECT * FROM transactions WHERE hash = ?", ROW_MAPPER, hash.trim().toLowerCase()).stream().findFirst();
+    return readJdbc.query("SELECT * FROM transactions WHERE hash = ?", ROW_MAPPER, hash.trim().toLowerCase()).stream().findFirst();
   }
 
   // Возвращает подмножество переданных хешей, которые уже подтверждены блоком.
@@ -73,7 +87,7 @@ public class TransactionRepository {
     for (int from = 0; from < list.size(); from += 500) {
       List<String> chunk = list.subList(from, Math.min(list.size(), from + 500));
       String placeholders = String.join(",", Collections.nCopies(chunk.size(), "?"));
-      found.addAll(jdbcTemplate.queryForList(
+      found.addAll(readJdbc.queryForList(
         "SELECT hash FROM transactions WHERE status = 'confirmed' AND hash IN (" + placeholders + ")",
         String.class, chunk.toArray()
       ));
@@ -83,7 +97,7 @@ public class TransactionRepository {
 
   // Возвращает список всех подтвержденных транзакций блока строго по порядку их индексов.
   public List<Transaction> findByBlockHeight(long blockHeight) {
-    return jdbcTemplate.query(
+    return readJdbc.query(
       "SELECT * FROM transactions WHERE block_height = ? AND status = 'confirmed' ORDER BY tx_index ASC, rowid ASC",
       ROW_MAPPER,
       blockHeight
@@ -93,7 +107,7 @@ public class TransactionRepository {
   // Возвращает подтвержденные транзакции блоков в диапазоне высот [fromHeight, toHeight].
   public List<Transaction> findByBlockHeightBetween(long fromHeight, long toHeight) {
     if (fromHeight > toHeight) return Collections.emptyList();
-    return jdbcTemplate.query(
+    return readJdbc.query(
       "SELECT * FROM transactions WHERE block_height >= ? AND block_height <= ? AND status = 'confirmed' ORDER BY block_height ASC, tx_index ASC, rowid ASC",
       ROW_MAPPER,
       fromHeight,
@@ -105,7 +119,7 @@ public class TransactionRepository {
   public List<Transaction> findByAddress(String addr, int limit, int offset) {
     if (addr == null || limit <= 0) return Collections.emptyList();
     String norm = addr.trim().toLowerCase();
-    return jdbcTemplate.query("""
+    return readJdbc.query("""
       SELECT * FROM transactions
       WHERE tx_from = ? OR tx_to = ?
       ORDER BY timestamp DESC, nonce DESC, hash ASC
@@ -117,7 +131,7 @@ public class TransactionRepository {
   public long countByAddress(String addr) {
     if (addr == null) return 0L;
     String norm = addr.trim().toLowerCase();
-    Long cnt = jdbcTemplate.queryForObject(
+    Long cnt = readJdbc.queryForObject(
       "SELECT COUNT(*) FROM transactions WHERE tx_from = ? OR tx_to = ?",
       Long.class, norm, norm
     );
@@ -126,7 +140,7 @@ public class TransactionRepository {
 
   // Возвращает список неподтвержденных транзакций со статусом pending.
   public List<Transaction> findPending() {
-    return jdbcTemplate.query(
+    return readJdbc.query(
       "SELECT * FROM transactions WHERE status = 'pending' ORDER BY timestamp ASC, nonce ASC, hash ASC",
       ROW_MAPPER
     );
@@ -134,6 +148,6 @@ public class TransactionRepository {
 
   // Полностью очищает таблицу транзакций в базе данных.
   public void deleteAll() {
-    jdbcTemplate.update("DELETE FROM transactions");
+    writeJdbc.update("DELETE FROM transactions");
   }
 }

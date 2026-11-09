@@ -93,8 +93,6 @@ public final class ConsensusUtil {
     long actualTimeSpan = Math.max(1L, mtpPrev - anchorTime);
     int currentDiff = prev.difficulty > 0 ? prev.difficulty : config.difficulty;
 
-    // Окно из MTP не сдвинулось на минимум 1 с на блок — время заморожено, повышать сложность не за что
-    if (mtpAnchor > 0 && actualTimeSpan < blocksSpan * 1000L) return currentDiff;
     if (actualTimeSpan < targetTimeSpan / 2) {
       return Math.min(config.maxDifficulty, currentDiff + 1);
     }
