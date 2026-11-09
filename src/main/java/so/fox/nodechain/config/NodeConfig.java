@@ -1,24 +1,27 @@
 package so.fox.nodechain.config;
 
 import jakarta.annotation.PostConstruct;
+import java.util.HashMap;
+import java.util.Map;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Configuration;
+import so.fox.nodechain.crypto.CryptoUtil;
 
-// Конфигурация параметров ноды блокчейна со строгой валидацией консенсуса
+// Конфигурация параметров ноды блокчейна со строгой валидацией консенсуса.
 @Configuration
 public class NodeConfig {
 
   @Value("${server.port:8080}")
-  public int serverPort;
+  public int serverPort = 8080;
 
   @Value("${node.p2p.port:9090}")
-  public int p2pPort;
+  public int p2pPort = 9090;
 
   @Value("${node.db.path:sqlite.db}")
-  public String dbPath;
+  public String dbPath = "sqlite.db";
 
   @Value("${blockchain.chain-id:foxchain-main-1}")
-  public String chainId;
+  public String chainId = "foxchain-main-1";
 
   @Value("${blockchain.difficulty:4}")
   public int difficulty = 4;
@@ -36,32 +39,51 @@ public class NodeConfig {
   public int maxDifficulty = 16;
 
   @Value("${blockchain.mining-reward:100000000}")
-  public long miningReward;
+  public long miningReward = 100_000_000L;
 
   @Value("${blockchain.auto-mine:true}")
-  public boolean isAutoMine;
+  public boolean isAutoMine = true;
 
   @Value("${blockchain.mine-interval-seconds:10}")
-  public int mineIntervalSeconds;
+  public int mineIntervalSeconds = 10;
 
   @Value("${blockchain.max-mempool-size:10000}")
-  public int maxMempoolSize;
+  public int maxMempoolSize = 10_000;
 
   @Value("${blockchain.genesis-allocation:1000000000000}")
-  public long genesisAllocation;
+  public long genesisAllocation = 1_000_000_000_000L;
 
   @Value("${blockchain.genesis-address:}")
-  public String genesisAddress;
+  public String genesisAddress = "";
 
   @Value("${blockchain.halving-interval:210000}")
-  public long halvingInterval;
+  public long halvingInterval = 210_000L;
 
   @Value("${node.p2p.seeds:}")
-  public String peerSeeds;
+  public String peerSeeds = "";
 
-  // Валидирует параметры консенсуса и конфигурации при запуске ноды
+  @Value("${blockchain.checkpoints:}")
+  public String checkpointsRaw = "";
+
+  // Разобранные чекпоинты, заполняются один раз при старте
+  public Map<Long, String> checkpoints = Map.of();
+
+  // Разбирает чекпоинты сети из конфигурации в неизменяемую карту высота -> хеш.
+  public Map<Long, String> parseCheckpoints() {
+    if (checkpointsRaw == null || checkpointsRaw.isBlank()) return Map.of();
+    Map<Long, String> map = new HashMap<>();
+    for (String el : checkpointsRaw.split(",")) {
+      String[] parts = el.trim().split(":");
+      if (parts.length != 2 || !parts[0].matches("^\\d{1,18}$")) continue;
+      map.put(Long.parseLong(parts[0]), parts[1].trim().toLowerCase());
+    }
+    return Map.copyOf(map);
+  }
+
+  // Валидирует параметры консенсуса и конфигурации при запуске ноды.
   @PostConstruct
   public void validate() {
+    checkpoints = parseCheckpoints();
     if (difficulty < 1 || difficulty > 32) {
       throw new IllegalStateException("Параметр blockchain.difficulty должен быть в диапазоне от 1 до 32: " + difficulty);
     }
@@ -100,6 +122,15 @@ public class NodeConfig {
     }
     if (targetBlockTimeSeconds <= 0) {
       throw new IllegalStateException("Параметр blockchain.target-block-time-seconds должен быть больше 0");
+    }
+    if (genesisAddress != null && !genesisAddress.isBlank() && !CryptoUtil.isValidAddress(genesisAddress.trim())) {
+      throw new IllegalStateException("Некорректный формат blockchain.genesis-address: " + genesisAddress);
+    }
+    if (difficulty < minDifficulty || difficulty > maxDifficulty) {
+      throw new IllegalStateException("Значение blockchain.difficulty должно быть в диапазоне [minDifficulty, maxDifficulty]");
+    }
+    if (mineIntervalSeconds <= 0) {
+      throw new IllegalStateException("Значение blockchain.mine-interval-seconds должно быть больше 0");
     }
   }
 }

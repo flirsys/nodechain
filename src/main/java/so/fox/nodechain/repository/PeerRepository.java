@@ -6,7 +6,7 @@ import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
 import so.fox.nodechain.model.PeerInfo;
 
-// Репозиторий хранения и обнаружения сетевых пиров P2P в SQLite
+// Репозиторий хранения и обнаружения сетевых пиров P2P в SQLite.
 @Repository
 public class PeerRepository {
 
@@ -22,29 +22,29 @@ public class PeerRepository {
     this.jdbcTemplate = jdbcTemplate;
   }
 
-  // Возвращает список всех известных пиров по времени последней активности
+  // Возвращает список всех известных пиров по времени последней активности.
   public List<PeerInfo> findAll() {
     return jdbcTemplate.query("SELECT * FROM peers ORDER BY last_seen DESC", ROW_MAPPER);
   }
 
-  // Возвращает общее количество известных пиров в базе данных
+  // Возвращает общее количество известных пиров в базе данных.
   public long count() {
     Long count = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM peers", Long.class);
     return count != null ? count : 0L;
   }
 
-  // Сохраняет или обновляет отметку времени активности пира
+  // Сохраняет нового пира или обновляет время его последней активности (UPSERT).
   public void saveOrUpdate(PeerInfo peer) {
-    if (peer == null) return;
-    jdbcTemplate.update(
-      "INSERT OR REPLACE INTO peers (host, port, last_seen) VALUES (?, ?, ?)",
-      peer.host(), peer.port(), peer.lastSeen()
-    );
+    if (peer == null || peer.host() == null) return;
+    jdbcTemplate.update("""
+      INSERT INTO peers (host, port, last_seen) VALUES (?, ?, ?)
+      ON CONFLICT(host, port) DO UPDATE SET last_seen = MAX(peers.last_seen, excluded.last_seen)
+    """, peer.host().trim().toLowerCase(), peer.port(), peer.lastSeen());
   }
 
-  // Удаляет неактивного пира из базы данных
+  // Удаляет недоступного пира из базы данных.
   public void delete(String host, int port) {
     if (host == null) return;
-    jdbcTemplate.update("DELETE FROM peers WHERE host = ? AND port = ?", host, port);
+    jdbcTemplate.update("DELETE FROM peers WHERE host = ? AND port = ?", host.trim().toLowerCase(), port);
   }
 }

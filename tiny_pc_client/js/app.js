@@ -4,17 +4,56 @@
  */
 
 // Вспомогательные функции форматирования
-const Format = {
-  toFoxt(atoms) {
-    if (atoms == null || atoms <= 0) return '0.00000000';
-    const b = BigInt(Math.trunc(atoms));
+class Format {
+  static toFoxt(atoms) {
+    if (atoms == null) return '0.00000000';
+    let b;
+    if (typeof atoms === 'bigint') {
+      if (atoms <= 0n) return '0.00000000';
+      b = atoms;
+    } else {
+      const n = Number(atoms);
+      if (!Number.isFinite(n) || n <= 0) return '0.00000000';
+      b = BigInt(Math.trunc(n));
+    }
     const whole = b / 100000000n;
     const frac = (b % 100000000n).toString().padStart(8, '0');
     return `${whole}.${frac}`;
-  },
+  }
+
+  /**
+   * Формирует каноническое текстовое представление файла nodewallet.dat (R-16).
+   */
+  static buildWalletFile(w) {
+    if (!w) return '';
+    const priv = w.privateKeyBase64 || '';
+    const pub = w.publicKeyBase64 || '';
+    const addr = w.address || '';
+    return `${priv}\n${pub}\n${addr}\n`;
+  }
+
+  /**
+   * Инициирует скачивание файла nodewallet.dat для кошелька (R-16).
+   */
+  static downloadWalletFile(w) {
+    if (!w) return;
+    if (!w.privateKeyBase64) {
+      AppState.notify('Приватный ключ защищен WebCrypto (non-extractable). Экспорт доступен только при создании/импорте.', 'error');
+      return;
+    }
+    const content = this.buildWalletFile(w);
+    const blob = new Blob([content], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'nodewallet.dat';
+    a.click();
+    URL.revokeObjectURL(url);
+    AppState.notify('Файл nodewallet.dat скачан', 'success');
+  }
 
   // Точный парсинг FOXT в атомы без потери точности IEEE 754 float
-  parseFoxtToAtoms(val) {
+  static parseFoxtToAtoms(val) {
     if (val == null) return null;
     const str = String(val).trim();
     if (!str || !/^\d+(\.\d{1,8})?$/.test(str)) return null;
@@ -24,14 +63,14 @@ const Format = {
     const total = whole + frac;
     if (total <= 0n || total > 9007199254740991n) return null;
     return Number(total);
-  },
+  }
 
-  shortHash(hash, left = 8, right = 8) {
+  static shortHash(hash, left = 8, right = 8) {
     if (!hash || hash.length <= (left + right)) return hash || '';
     return `${hash.slice(0, left)}...${hash.slice(-right)}`;
-  },
+  }
 
-  date(timestamp) {
+  static date(timestamp) {
     if (!timestamp) return '-';
     const d = new Date(timestamp);
     return d.toLocaleString('ru-RU', {
@@ -42,15 +81,18 @@ const Format = {
       month: '2-digit',
       year: 'numeric'
     });
-  },
-
-  async copyText(text, label = 'Скопировано') {
-    if (!text) return;
-    navigator.clipboard.writeText(text)
-      .then(() => AppState.notify(`${label} в буфер обмена`, 'success'))
-      .catch(() => AppState.notify('Ошибка копирования', 'error'));
   }
-};
+
+  static async copyText(text, label = 'Скопировано') {
+    if (!text || typeof text !== 'string') return;
+    const ok = await navigator.clipboard.writeText(text).then(() => true).catch(() => false);
+    if (!ok) {
+      AppState.notify('Ошибка копирования', 'error');
+      return;
+    }
+    AppState.notify(`${label} в буфер обмена`, 'success');
+  }
+}
 
 // Локальное состояние модальных окон
 const ModalState = {
@@ -85,7 +127,7 @@ const HeaderComponent = {
           class: AppState.currentTab === 'explorer' ? 'active' : '',
           onclick: () => {
             AppState.currentTab = 'explorer';
-            if (!AppState.explorer.block) NodeApi.getBlock('latest').then(res => { if (res.isOk) AppState.explorer.block = res.data; m.redraw(); });
+            if (!AppState.explorer.block && !AppState.explorer.tx) AppState.searchExplorer('latest');
           }
         }, [
           m('span.tab-indicator', '🔍'),
@@ -98,13 +140,13 @@ const HeaderComponent = {
           m('span.tab-indicator', '⚡'),
           m('span', `Мемпул (${AppState.mempool.count})`)
         ]),
-        m('button.nav-tab', {
+        AppState.isDevMode ? m('button.nav-tab', {
           class: AppState.currentTab === 'dev' ? 'active' : '',
           onclick: () => { AppState.currentTab = 'dev'; }
         }, [
           m('span.tab-indicator', '🛠️'),
           m('span', 'Dev / Управление')
-        ])
+        ]) : null
       ]),
 
       m('.header-status', [
@@ -156,7 +198,20 @@ const WalletView = {
       return;
     }
 
-    const feeAtoms = parseInt(f.fee, 10) || 50;
+    const feeNum = Number(f.fee);
+    if (!Number.isSafeInteger(feeNum) || feeNum < 1 || feeNum > 100000000) {
+      AppState.notify('Комиссия должна быть целым числом от 1 до 100 000 000 атомов', 'error');
+      return;
+    }
+    const feeAtoms = feeNum;
+
+    const totalRequired = BigInt(amountAtoms) + BigInt(feeAtoms);
+    const available = BigInt(Math.max(0, Math.trunc(Number(AppState.activeAccount.unconfirmedBalance) || 0)));
+    if (available < totalRequired) {
+      AppState.notify(`Недостаточно средств. Доступно: ${Format.toFoxt(available)} FOXT, требуется: ${Format.toFoxt(totalRequired)} FOXT`, 'error');
+      return;
+    }
+
     f.isSending = true;
     m.redraw();
 
@@ -223,7 +278,7 @@ const WalletView = {
         m('.stat-box', [
           m('.stat-label', 'Подтвержденный баланс'),
           m('.stat-value', `${Format.toFoxt(acc.balance)} FOXT`),
-          m('.stat-sub', `${acc.balance.toLocaleString()} атомов`)
+          m('.stat-sub', `${(Number.isSafeInteger(acc.balance) ? acc.balance : 0).toLocaleString()} атомов`)
         ]),
         m('.stat-box', [
           m('.stat-label', 'Неподтвержденный баланс'),
@@ -274,7 +329,9 @@ const WalletView = {
                   style: { float: 'right', fontSize: '11px', color: 'var(--accent-blue)' },
                   onclick: (e) => {
                     e.preventDefault();
-                    const maxAtoms = Math.max(0, acc.unconfirmedBalance - f.fee);
+                    const unconfirmed = BigInt(Math.max(0, Math.trunc(Number(acc.unconfirmedBalance) || 0)));
+                    const feeAtoms = BigInt(Math.max(1, Math.trunc(Number(f.fee) || 50)));
+                    const maxAtoms = unconfirmed > feeAtoms ? unconfirmed - feeAtoms : 0n;
                     f.amountFoxt = Format.toFoxt(maxAtoms);
                   }
                 }, 'Все (MAX)')
@@ -343,17 +400,7 @@ const WalletView = {
             m('p', { style: { fontSize: '11px', color: 'var(--text-muted)', marginBottom: '8px' } },
               'Вы можете скачать ключ в формате nodewallet.dat и положить в рабочую папку NodeChain для майнинга прямо на этот кошелек:'),
             m('button.btn.btn-sm', {
-              onclick: () => {
-                const content = `${w.privateKeyBase64}\n${w.publicKeyBase64}\n${w.address}\n`;
-                const blob = new Blob([content], { type: 'text/plain' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = 'nodewallet.dat';
-                a.click();
-                URL.revokeObjectURL(url);
-                AppState.notify('Файл nodewallet.dat скачан', 'success');
-              }
+              onclick: () => Format.downloadWalletFile(w)
             }, '💾 Скачать nodewallet.dat')
           ])
         ])
@@ -666,8 +713,6 @@ const MempoolView = {
 
 // Компонент вкладки Разработчика / Dev Section
 const DevView = {
-  rawResponse: null,
-
   async handleSendFaucet() {
     const dev = AppState.dev;
     if (!dev.minerWallet || !dev.minerWallet.cryptoPrivKey) {
@@ -685,7 +730,8 @@ const DevView = {
       AppState.notify('Укажите корректную сумму крана', 'error');
       return;
     }
-    const feeAtoms = parseInt(dev.faucetFee, 10) || 50;
+    const feeNum = Number(dev.faucetFee);
+    const feeAtoms = (Number.isSafeInteger(feeNum) && feeNum >= 1 && feeNum <= 100000000) ? feeNum : 50;
 
     dev.isProcessing = true;
     m.redraw();
@@ -713,8 +759,12 @@ const DevView = {
       AppState.notify('Сначала выберите или создайте активный кошелек получателя', 'error');
       return;
     }
-    const minerAddr = AppState.dev.minerWallet.address;
-    const recipient = AppState.activeWallet.address;
+    const minerAddr = AppState.dev.minerWallet.address.toLowerCase();
+    const recipient = AppState.activeWallet.address.toLowerCase();
+    if (minerAddr === recipient) {
+      AppState.notify('Нельзя отправить средства самому себе (выберите другой активный кошелек)', 'error');
+      return;
+    }
     let curNonce = await AppState.getNextNonce(minerAddr);
     if (curNonce == null) {
       AppState.notify('Не удалось определить nonce майнера', 'error');
@@ -723,30 +773,26 @@ const DevView = {
 
     AppState.notify(`Генерация ${count} транзакций с последовательным nonce...`, 'info');
 
-    const chainId = (AppState.network && AppState.network.chainId && AppState.network.chainId !== '-')
-      ? AppState.network.chainId : 'foxchain-main-1';
-
+    let sentCount = 0;
     for (let i = 0; i < count; i++) {
-      const canonical = CryptoUtil.buildCanonicalString(minerAddr, recipient, 1000, 50, curNonce, `Batch Test #${i + 1}`, chainId);
-      const sig = await CryptoUtil.sign(AppState.dev.minerWallet.cryptoPrivKey, canonical);
-      if (!sig) continue;
-      await NodeApi.sendTransaction({
-        chainId: chainId,
-        from: minerAddr,
-        to: recipient,
-        amount: 1000,
-        fee: 50,
-        nonce: curNonce,
-        publicKey: AppState.dev.minerWallet.publicKeyBase64,
-        signature: sig,
-        comment: `Batch Test #${i + 1}`
-      });
+      const res = await AppState.buildAndSendTx(
+        AppState.dev.minerWallet,
+        recipient,
+        1000,
+        50,
+        `Batch Test #${i + 1}`,
+        curNonce
+      );
+      if (!res.isOk) break;
       curNonce++;
+      sentCount++;
     }
 
-    AppState.notify(`${count} тестовых транзакций отправлены в Mempool!`, 'success');
+    AppState.notify(`${sentCount} тестовых транзакций отправлены в Mempool!`, sentCount > 0 ? 'success' : 'error');
     AppState.refreshMempool();
     AppState.refreshMinerAccount();
+    AppState.refreshAccount();
+    AppState.refreshHistory();
   },
 
   async executeRawRpc() {
@@ -757,9 +803,8 @@ const DevView = {
 
     let bodyObj = null;
     if (raw.body && raw.body.trim().length > 0) {
-      try {
-        bodyObj = JSON.parse(raw.body);
-      } catch (err) {
+      bodyObj = AppState.parseJsonSafe(raw.body);
+      if (bodyObj == null) {
         raw.isLoading = false;
         raw.result = { error: 'Некорректный JSON в теле запроса' };
         m.redraw();
@@ -784,16 +829,26 @@ const DevView = {
           m('.form-group', [
             m('label.form-label', 'Адрес REST API ноды (RPC Endpoint)'),
             m('input.form-control.mono', {
-              value: AppState.rpcUrl,
-              oninput: (e) => { AppState.setRpcUrl(e.target.value); }
+              value: AppState.rpcInput,
+              onchange: (e) => { AppState.setRpcUrl(e.target.value); },
+              oninput: (e) => { AppState.rpcInput = e.target.value; }
             })
           ]),
           m('.form-group', [
             m('label.form-label', 'Действие'),
             m('button.btn.btn-primary', {
               style: { marginTop: '2px' },
-              onclick: () => { AppState.refreshNetwork(); AppState.notify('Связь с узлом проверена', 'info'); }
-            }, '🔄 Проверить подключение')
+              onclick: () => {
+                if (!AppState.rpcInput) return;
+                const isUpdated = AppState.setRpcUrl(AppState.rpcInput);
+                if (isUpdated) {
+                  AppState.refreshNetwork();
+                  AppState.notify('Адрес узла обновлен. Проверяем связь...', 'info');
+                } else {
+                  AppState.notify('Некорректный адрес узла (пример: http://localhost:8080)', 'error');
+                }
+              }
+            }, '🔄 Применить и проверить')
           ])
         ]),
 
@@ -834,19 +889,20 @@ const DevView = {
             m('textarea.form-control.mono', {
               rows: 3,
               placeholder: 'MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC...\n(или все 3 строки из nodewallet.dat)',
-              id: 'dev_wallet_input'
+              value: dev.inputContent || '',
+              oninput: (e) => { dev.inputContent = e.target.value; }
             })
           ]),
           m('button.btn.btn-orange', {
             onclick: async () => {
-              const el = document.getElementById('dev_wallet_input');
-              if (!el || !el.value.trim()) return;
-              const lines = el.value.trim().split('\n').map(l => l.trim()).filter(Boolean);
-              const priv = lines[0];
-              const pub = lines.length > 1 ? lines[1] : '';
-              const addr = lines.length > 2 ? lines[2] : '';
+              if (!dev.inputContent || !dev.inputContent.trim()) return;
+              const parsed = AppState.parseWalletInput(dev.inputContent);
+              if (!parsed) {
+                AppState.notify('Не удалось расшифровать ключи nodewallet.dat (нужны приватный и открытый ключи)', 'error');
+                return;
+              }
 
-              const imported = await CryptoUtil.loadWalletFromData(priv, pub, addr);
+              const imported = await CryptoUtil.loadWalletFromData(parsed.priv, parsed.pub, parsed.addr);
               if (!imported) {
                 AppState.notify('Не удалось расшифровать ключи nodewallet.dat (нужны приватный и открытый ключи)', 'error');
                 return;
@@ -858,8 +914,9 @@ const DevView = {
                 cryptoPrivKey: imported.privateKey,
                 cryptoPubKey: imported.publicKey
               };
-              AppState.saveDevWallet(imported.privateKeyBase64, imported.publicKeyBase64, imported.address);
+              await AppState.saveDevWallet(dev.minerWallet);
               AppState.refreshMinerAccount();
+              dev.inputContent = '';
               AppState.notify('Кошелек майнера подключен к крану!', 'success');
               m.redraw();
             }
@@ -909,9 +966,10 @@ const DevView = {
           m('.btn-group', [
             m('button.btn.btn-sm', { onclick: () => DevView.handleBatchSpam(3) }, '🚀 Создать 3 тестовые транзакции (Stress Mempool)'),
             m('button.btn.btn-sm', {
-              onclick: () => {
+              onclick: async () => {
                 dev.minerWallet = null;
                 localStorage.removeItem(AppState.STORAGE_KEY_DEV_WALLET);
+                await KeyVault.remove('__dev_miner_wallet__');
                 AppState.notify('Кошелек майнера отключен', 'info');
               }
             }, 'Отключить кошелек крана')
@@ -989,14 +1047,21 @@ const ModalComponent = {
               m('label.form-label', 'Fox-адрес кошелька:'),
               m('.address-box', ModalState.data.address)
             ]),
-            m('.form-group', [
+            ModalState.data.privateKeyBase64 ? m('.form-group', [
               m('label.form-label', 'Закрытый ключ (PKCS#8 Base64) - ХРАНИТЕ В ТАЙНЕ:'),
               m('textarea.form-control.mono', { rows: 4, readonly: true, value: ModalState.data.privateKeyBase64 })
+            ]) : m('.stat-box', { style: { marginBottom: '12px' } }, [
+              m('.stat-label', 'Безопасность закрытого ключа'),
+              m('p', { style: { fontSize: '12px', color: 'var(--text-muted)' } },
+                '🔒 Ключ сохранен в защищенном хранилище как non-extractable CryptoKey. Текстовый приватный ключ не хранится в браузере.')
             ]),
             m('.form-group', [
               m('label.form-label', 'Открытый ключ (X.509 SPKI Base64):'),
               m('textarea.form-control.mono', { rows: 3, readonly: true, value: ModalState.data.publicKeyBase64 })
-            ])
+            ]),
+            ModalState.data.privateKeyBase64 ? m('button.btn.btn-primary.btn-sm', {
+              onclick: () => Format.downloadWalletFile(ModalState.data)
+            }, '💾 Скачать nodewallet.dat') : null
           ]) : null,
 
           ModalState.type === 'import' ? m('div', [
@@ -1044,7 +1109,7 @@ const ModalComponent = {
 // Компонент уведомлений
 const ToastComponent = {
   view() {
-    if (!AppState.toast.visible) return null;
+    if (!AppState.toast.isVisible) return null;
     return m('.toast-container', [
       m('.toast', { class: AppState.toast.type }, [
         m('span', AppState.toast.type === 'success' ? '✅' : (AppState.toast.type === 'error' ? '❌' : 'ℹ️')),
@@ -1066,7 +1131,7 @@ const App = {
         AppState.currentTab === 'wallet' ? m(WalletView) : null,
         AppState.currentTab === 'explorer' ? m(ExplorerView) : null,
         AppState.currentTab === 'mempool' ? m(MempoolView) : null,
-        AppState.currentTab === 'dev' ? m(DevView) : null
+        AppState.isDevMode && AppState.currentTab === 'dev' ? m(DevView) : null
       ]),
       m(ModalComponent),
       m(ToastComponent)

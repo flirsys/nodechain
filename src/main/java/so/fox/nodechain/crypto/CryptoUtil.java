@@ -15,15 +15,16 @@ import java.util.HexFormat;
 import java.util.regex.Pattern;
 import java.util.zip.CRC32;
 
-// Утилитный класс криптографических операций: Ed25519, SHA-256, подписи и fox-адреса
+// Утилитный класс криптографических операций: Ed25519, SHA-256, подписи и fox-адреса.
 public final class CryptoUtil {
 
   private static final HexFormat HEX = HexFormat.of();
-  private static final Pattern ADDRESS_PATTERN = Pattern.compile("^[0-9a-fox]{64}$");
+  private static final Pattern ADDRESS_PREFIX_PATTERN = Pattern.compile("^[0-9a-fox]{5}$");
+  private static final Pattern ADDRESS_SUFFIX_PATTERN = Pattern.compile("^[0-9a-f]{59}$");
 
   private CryptoUtil() {}
 
-  // Генерирует новую пару ключей алгоритма Ed25519
+  // Генерирует новую пару ключей алгоритма Ed25519.
   public static KeyPair generateKeyPair() {
     try {
       KeyPairGenerator gen = KeyPairGenerator.getInstance("Ed25519");
@@ -33,11 +34,12 @@ public final class CryptoUtil {
     }
   }
 
-  // Восстанавливает открытый ключ Ed25519 из строки Base64 (X.509)
+  // Восстанавливает открытый ключ Ed25519 из строки Base64 (X.509).
   public static PublicKey parsePublicKey(String b64Key) {
     if (b64Key == null || b64Key.isEmpty()) return null;
     try {
       byte[] bytes = Base64.getDecoder().decode(b64Key);
+      if (!b64Key.equals(Base64.getEncoder().encodeToString(bytes))) return null;
       KeyFactory kf = KeyFactory.getInstance("Ed25519");
       return kf.generatePublic(new X509EncodedKeySpec(bytes));
     } catch (Exception err) {
@@ -45,11 +47,12 @@ public final class CryptoUtil {
     }
   }
 
-  // Восстанавливает закрытый ключ Ed25519 из строки Base64 (PKCS#8)
+  // Восстанавливает закрытый ключ Ed25519 из строки Base64 (PKCS#8) с проверкой каноничности.
   public static PrivateKey parsePrivateKey(String b64Key) {
     if (b64Key == null || b64Key.isEmpty()) return null;
     try {
       byte[] bytes = Base64.getDecoder().decode(b64Key);
+      if (!b64Key.equals(Base64.getEncoder().encodeToString(bytes))) return null;
       KeyFactory kf = KeyFactory.getInstance("Ed25519");
       return kf.generatePrivate(new PKCS8EncodedKeySpec(bytes));
     } catch (Exception err) {
@@ -57,19 +60,19 @@ public final class CryptoUtil {
     }
   }
 
-  // Кодирует открытый ключ в формат Base64
+  // Кодирует открытый ключ в формат Base64.
   public static String encodePublicKey(PublicKey pubKey) {
     if (pubKey == null) return null;
     return Base64.getEncoder().encodeToString(pubKey.getEncoded());
   }
 
-  // Кодирует закрытый ключ в формат Base64
+  // Кодирует закрытый ключ в формат Base64.
   public static String encodePrivateKey(PrivateKey privKey) {
     if (privKey == null) return null;
     return Base64.getEncoder().encodeToString(privKey.getEncoded());
   }
 
-  // Вычисляет уникальный fox-адрес из открытого ключа со встроенной контрольной суммой CRC32
+  // Вычисляет уникальный fox-адрес из открытого ключа со встроенной контрольной суммой CRC32.
   public static String getAddressFromPublicKey(PublicKey pubKey) {
     if (pubKey == null) return null;
     byte[] hash = sha256Bytes(pubKey.getEncoded());
@@ -97,19 +100,23 @@ public final class CryptoUtil {
     return new String(arr);
   }
 
-  // Проверяет валидность формата fox-адреса сети и контрольную сумму (регистронезависимо)
+  // Проверяет валидность формата fox-адреса сети и контрольную сумму (регистронезависимо).
   public static boolean isValidAddress(String addr) {
     if (addr == null || addr.length() != 64) return false;
     String lower = addr.toLowerCase();
-    if (!ADDRESS_PATTERN.matcher(lower).matches()) return false;
-    if (lower.indexOf('f') < 0 || lower.indexOf('o') < 0 || lower.indexOf('x') < 0) return false;
+    String prefix = lower.substring(0, 5);
+    if (!ADDRESS_PREFIX_PATTERN.matcher(prefix).matches()) return false;
+    if (prefix.indexOf('f') < 0 || prefix.indexOf('o') < 0 || prefix.indexOf('x') < 0) return false;
+
+    String suffix = lower.substring(5);
+    if (!ADDRESS_SUFFIX_PATTERN.matcher(suffix).matches()) return false;
 
     String payload = lower.substring(0, 56);
     String expected = computeChecksumHex(payload);
     return lower.substring(56).equalsIgnoreCase(expected);
   }
 
-  // Вычисляет 8-символьную hex контрольную сумму CRC32
+  // Вычисляет 8-символьную hex контрольную сумму CRC32.
   public static String computeChecksumHex(String payload) {
     if (payload == null) return "";
     CRC32 crc = new CRC32();
@@ -117,7 +124,7 @@ public final class CryptoUtil {
     return String.format("%08x", crc.getValue());
   }
 
-  // Создает цифровую подпись данных алгоритмом Ed25519
+  // Создает цифровую подпись данных алгоритмом Ed25519.
   public static String sign(PrivateKey privKey, String data) {
     if (privKey == null || data == null) return null;
     try {
@@ -130,20 +137,22 @@ public final class CryptoUtil {
     }
   }
 
-  // Проверяет цифровую подпись данных открытым ключом Ed25519
+  // Проверяет цифровую подпись данных открытым ключом Ed25519.
   public static boolean isSignatureValid(PublicKey pubKey, String data, String sigB64) {
     if (pubKey == null || data == null || sigB64 == null) return false;
     try {
+      byte[] sigBytes = Base64.getDecoder().decode(sigB64);
+      if (!sigB64.equals(Base64.getEncoder().encodeToString(sigBytes))) return false;
       Signature sig = Signature.getInstance("Ed25519");
       sig.initVerify(pubKey);
       sig.update(data.getBytes(StandardCharsets.UTF_8));
-      return sig.verify(Base64.getDecoder().decode(sigB64));
+      return sig.verify(sigBytes);
     } catch (Exception err) {
       return false;
     }
   }
 
-  // Вычисляет SHA-256 хеш массива байт
+  // Вычисляет SHA-256 хеш массива байт.
   public static byte[] sha256Bytes(byte[] bytes) {
     if (bytes == null) return null;
     try {
@@ -154,7 +163,7 @@ public final class CryptoUtil {
     }
   }
 
-  // Вычисляет SHA-256 хеш строки (UTF-8) в виде hex-строки
+  // Вычисляет SHA-256 хеш строки (UTF-8) в виде hex-строки.
   public static String sha256Hex(String text) {
     if (text == null) return null;
     byte[] hash = sha256Bytes(text.getBytes(StandardCharsets.UTF_8));

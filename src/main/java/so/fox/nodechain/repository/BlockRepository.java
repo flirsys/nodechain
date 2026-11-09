@@ -8,11 +8,9 @@ import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
 import so.fox.nodechain.model.Block;
 
-// Репозиторий доступа к блокам блокчейна в базе данных SQLite
+// Репозиторий доступа к блокам блокчейна в базе данных SQLite.
 @Repository
 public class BlockRepository {
-
-  private final JdbcTemplate jdbcTemplate;
 
   private static final RowMapper<Block> ROW_MAPPER = (rs, i) -> new Block(new Block.Meta(
     rs.getLong("height"),
@@ -27,44 +25,50 @@ public class BlockRepository {
     rs.getLong("nonce")
   ));
 
+  private final JdbcTemplate jdbcTemplate;
+
   public BlockRepository(JdbcTemplate jdbcTemplate) {
     this.jdbcTemplate = jdbcTemplate;
   }
 
-  // Сохраняет заголовок блока в таблицу blocks строго с указанием chain_id
+  // Сохраняет или обновляет заголовок блока в таблице blocks с поддержкой chain_id.
   public void save(Block b) {
-    if (b == null) return;
+    if (b == null || b.hash == null) return;
+    b.hash = b.hash.trim().toLowerCase();
+    if (b.previousHash != null) b.previousHash = b.previousHash.trim().toLowerCase();
+    String miner = b.minerAddress != null ? b.minerAddress.trim() : "";
+    if (!miner.isEmpty() && !"GENESIS".equalsIgnoreCase(miner)) miner = miner.toLowerCase();
+    b.minerAddress = miner;
     jdbcTemplate.update("""
       INSERT OR REPLACE INTO blocks (height, chain_id, hash, previous_hash, merkle_root, miner_address, tx_count, timestamp, difficulty, nonce)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, b.height, b.chainId, b.hash, b.previousHash, b.merkleRoot,
-      b.minerAddress != null ? b.minerAddress : "",
-      b.txCount, b.timestamp, b.difficulty, b.nonce);
+      b.minerAddress, b.txCount, b.timestamp, b.difficulty, b.nonce);
   }
 
-  // Находит блок по его высоте (номеру)
+  // Находит блок по его высоте (номеру).
   public Optional<Block> findByHeight(long height) {
     return jdbcTemplate.query("SELECT * FROM blocks WHERE height = ?", ROW_MAPPER, height).stream().findFirst();
   }
 
-  // Находит блок по его криптографическому хешу
+  // Находит блок по его криптографическому хешу.
   public Optional<Block> findByHash(String hash) {
     if (hash == null) return Optional.empty();
-    return jdbcTemplate.query("SELECT * FROM blocks WHERE hash = ?", ROW_MAPPER, hash).stream().findFirst();
+    return jdbcTemplate.query("SELECT * FROM blocks WHERE hash = ?", ROW_MAPPER, hash.trim().toLowerCase()).stream().findFirst();
   }
 
-  // Возвращает самый свежий блок из цепочки с максимальной высотой
+  // Возвращает самый свежий блок из цепочки с максимальной высотой.
   public Optional<Block> findLatestBlock() {
     return jdbcTemplate.query("SELECT * FROM blocks ORDER BY height DESC LIMIT 1", ROW_MAPPER).stream().findFirst();
   }
 
-  // Возвращает общее количество сохраненных блоков в цепочке
+  // Возвращает общее количество сохраненных блоков в цепочке.
   public long count() {
     Long cnt = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM blocks", Long.class);
     return cnt != null ? cnt : 0L;
   }
 
-  // Загружает диапазон блоков начиная с указанной высоты с ограничением лимита
+  // Загружает диапазон блоков начиная с указанной высоты с ограничением лимита.
   public List<Block> findBlocksFrom(long fromHeight, int limit) {
     if (limit <= 0) return Collections.emptyList();
     return jdbcTemplate.query(
@@ -75,7 +79,18 @@ public class BlockRepository {
     );
   }
 
-  // Удаляет все блоки с высотой строго больше заданной
+  // Загружает блоки в диапазоне высот [fromHeight, toHeight] включительно.
+  public List<Block> findBlocksBetween(long fromHeight, long toHeight) {
+    if (fromHeight > toHeight) return Collections.emptyList();
+    return jdbcTemplate.query(
+      "SELECT * FROM blocks WHERE height >= ? AND height <= ? ORDER BY height ASC",
+      ROW_MAPPER,
+      fromHeight,
+      toHeight
+    );
+  }
+
+  // Удаляет все блоки с высотой строго больше заданной.
   public void deleteBlocksGreaterThan(long height) {
     jdbcTemplate.update("DELETE FROM blocks WHERE height > ?", height);
   }

@@ -1,3 +1,7 @@
 /.agents/
 /target/
 /testnet/
+*.db
+*.db-wal
+*.db-shm
+*.dat

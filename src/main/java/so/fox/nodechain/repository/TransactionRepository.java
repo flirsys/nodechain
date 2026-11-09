@@ -1,18 +1,20 @@
 package so.fox.nodechain.repository;
 
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
 import so.fox.nodechain.model.Transaction;
 
-// Репозиторий доступа к транзакциям блокчейна в базе данных SQLite
+// Репозиторий доступа к транзакциям блокчейна в базе данных SQLite.
 @Repository
 public class TransactionRepository {
-
-  private final JdbcTemplate jdbcTemplate;
 
   private static final RowMapper<Transaction> ROW_MAPPER = (rs, i) -> {
     Transaction tx = new Transaction();
@@ -35,13 +37,19 @@ public class TransactionRepository {
     return tx;
   };
 
+  private final JdbcTemplate jdbcTemplate;
+
   public TransactionRepository(JdbcTemplate jdbcTemplate) {
     this.jdbcTemplate = jdbcTemplate;
   }
 
-  // Сохраняет новую или обновляет существующую транзакцию в базе данных
+  // Сохраняет или обновляет транзакцию в базе данных.
   public void save(Transaction tx) {
-    if (tx == null) return;
+    if (tx == null || tx.hash == null) return;
+    tx.hash = tx.hash.trim().toLowerCase();
+    if (tx.blockHash != null) tx.blockHash = tx.blockHash.trim().toLowerCase();
+    if (tx.from != null) tx.from = tx.from.trim().toLowerCase();
+    if (tx.to != null) tx.to = tx.to.trim().toLowerCase();
     jdbcTemplate.update("""
       INSERT OR REPLACE INTO transactions (hash, block_height, block_hash, chain_id, tx_from, tx_to,
         amount, fee, nonce, public_key, signature, comment, timestamp, status, tx_index)
@@ -51,47 +59,81 @@ public class TransactionRepository {
       tx.comment, tx.timestamp, tx.status, tx.txIndex);
   }
 
-  // Находит транзакцию по ее криптографическому хешу
+  // Находит транзакцию по ее криптографическому хешу.
   public Optional<Transaction> findByHash(String hash) {
     if (hash == null) return Optional.empty();
-    return jdbcTemplate.query("SELECT * FROM transactions WHERE hash = ?", ROW_MAPPER, hash).stream().findFirst();
+    return jdbcTemplate.query("SELECT * FROM transactions WHERE hash = ?", ROW_MAPPER, hash.trim().toLowerCase()).stream().findFirst();
   }
 
-  // Возвращает список всех транзакций блока строго по порядку их индексов
+  // Возвращает подмножество переданных хешей, которые уже подтверждены блоком.
+  public Set<String> findConfirmedHashes(Collection<String> hashes) {
+    if (hashes == null || hashes.isEmpty()) return Set.of();
+    List<String> list = new ArrayList<>(hashes);
+    Set<String> found = new HashSet<>();
+    for (int from = 0; from < list.size(); from += 500) {
+      List<String> chunk = list.subList(from, Math.min(list.size(), from + 500));
+      String placeholders = String.join(",", Collections.nCopies(chunk.size(), "?"));
+      found.addAll(jdbcTemplate.queryForList(
+        "SELECT hash FROM transactions WHERE status = 'confirmed' AND hash IN (" + placeholders + ")",
+        String.class, chunk.toArray()
+      ));
+    }
+    return found;
+  }
+
+  // Возвращает список всех подтвержденных транзакций блока строго по порядку их индексов.
   public List<Transaction> findByBlockHeight(long blockHeight) {
     return jdbcTemplate.query(
-      "SELECT * FROM transactions WHERE block_height = ? ORDER BY tx_index ASC, rowid ASC",
+      "SELECT * FROM transactions WHERE block_height = ? AND status = 'confirmed' ORDER BY tx_index ASC, rowid ASC",
       ROW_MAPPER,
       blockHeight
     );
   }
 
-  // Возвращает список транзакций адреса с пагинацией
+  // Возвращает подтвержденные транзакции блоков в диапазоне высот [fromHeight, toHeight].
+  public List<Transaction> findByBlockHeightBetween(long fromHeight, long toHeight) {
+    if (fromHeight > toHeight) return Collections.emptyList();
+    return jdbcTemplate.query(
+      "SELECT * FROM transactions WHERE block_height >= ? AND block_height <= ? AND status = 'confirmed' ORDER BY block_height ASC, tx_index ASC, rowid ASC",
+      ROW_MAPPER,
+      fromHeight,
+      toHeight
+    );
+  }
+
+  // Возвращает список транзакций адреса с пагинацией.
   public List<Transaction> findByAddress(String addr, int limit, int offset) {
     if (addr == null || limit <= 0) return Collections.emptyList();
+    String norm = addr.trim().toLowerCase();
     return jdbcTemplate.query("""
       SELECT * FROM transactions
       WHERE tx_from = ? OR tx_to = ?
-      ORDER BY timestamp DESC
+      ORDER BY timestamp DESC, nonce DESC, hash ASC
       LIMIT ? OFFSET ?
-    """, ROW_MAPPER, addr, addr, limit, Math.max(0, offset));
+    """, ROW_MAPPER, norm, norm, limit, Math.max(0, offset));
   }
 
-  // Возвращает общее количество транзакций адреса
+  // Возвращает общее количество транзакций адреса.
   public long countByAddress(String addr) {
     if (addr == null) return 0L;
+    String norm = addr.trim().toLowerCase();
     Long cnt = jdbcTemplate.queryForObject(
       "SELECT COUNT(*) FROM transactions WHERE tx_from = ? OR tx_to = ?",
-      Long.class, addr, addr
+      Long.class, norm, norm
     );
     return cnt != null ? cnt : 0L;
   }
 
-  // Возвращает список неподтвержденных транзакций со статусом pending
+  // Возвращает список неподтвержденных транзакций со статусом pending.
   public List<Transaction> findPending() {
     return jdbcTemplate.query(
-      "SELECT * FROM transactions WHERE status = 'pending' ORDER BY timestamp ASC",
+      "SELECT * FROM transactions WHERE status = 'pending' ORDER BY timestamp ASC, nonce ASC, hash ASC",
       ROW_MAPPER
     );
+  }
+
+  // Полностью очищает таблицу транзакций в базе данных.
+  public void deleteAll() {
+    jdbcTemplate.update("DELETE FROM transactions");
   }
 }

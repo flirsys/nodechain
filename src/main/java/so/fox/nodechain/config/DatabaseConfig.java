@@ -9,45 +9,11 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.transaction.PlatformTransactionManager;
 
-// Конфигурация базы данных SQLite с пулом соединений HikariCP
+// Конфигурация базы данных SQLite с пулом соединений HikariCP.
 @Configuration
 public class DatabaseConfig {
 
-  private final NodeConfig nodeConfig;
-
-  public DatabaseConfig(NodeConfig nodeConfig) {
-    this.nodeConfig = nodeConfig;
-  }
-
-  // Настройка пула соединений HikariCP для SQLite в режиме WAL с поддержкой параллельного чтения
-  @Bean
-  public DataSource dataSource() {
-    HikariConfig cfg = new HikariConfig();
-    cfg.setDriverClassName("org.sqlite.JDBC");
-    cfg.setJdbcUrl("jdbc:sqlite:" + nodeConfig.dbPath);
-    cfg.setConnectionInitSql("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 10000;");
-    cfg.setMaximumPoolSize(10);
-    cfg.setConnectionTimeout(15000);
-    cfg.setIdleTimeout(600000);
-    cfg.setMaxLifetime(1800000);
-    return new HikariDataSource(cfg);
-  }
-
-  // Инициализирует JdbcTemplate и схему таблиц блокчейна
-  @Bean
-  public JdbcTemplate jdbcTemplate(DataSource dataSource) {
-    JdbcTemplate tmpl = new JdbcTemplate(dataSource);
-    initDatabase(tmpl);
-    return tmpl;
-  }
-
-  // Настройка менеджера транзакций для поддержки @Transactional на SQLite DataSource
-  @Bean
-  public PlatformTransactionManager transactionManager(DataSource dataSource) {
-    return new DataSourceTransactionManager(dataSource);
-  }
-
-  // Создает необходимые таблицы и индексы в SQLite
+  // Создает необходимые таблицы и индексы в SQLite.
   public static void initDatabase(JdbcTemplate jdbc) {
     jdbc.execute("""
       CREATE TABLE IF NOT EXISTS blocks (
@@ -83,8 +49,10 @@ public class DatabaseConfig {
         tx_index INTEGER DEFAULT 0
       );
     """);
-    jdbc.execute("CREATE INDEX IF NOT EXISTS idx_tx_from ON transactions(tx_from);");
-    jdbc.execute("CREATE INDEX IF NOT EXISTS idx_tx_to ON transactions(tx_to);");
+    jdbc.execute("DROP INDEX IF EXISTS idx_tx_from;");
+    jdbc.execute("DROP INDEX IF EXISTS idx_tx_to;");
+    jdbc.execute("CREATE INDEX IF NOT EXISTS idx_tx_from_time ON transactions(tx_from, timestamp DESC);");
+    jdbc.execute("CREATE INDEX IF NOT EXISTS idx_tx_to_time ON transactions(tx_to, timestamp DESC);");
     jdbc.execute("CREATE INDEX IF NOT EXISTS idx_tx_block_height ON transactions(block_height);");
     jdbc.execute("CREATE INDEX IF NOT EXISTS idx_tx_status ON transactions(status);");
 
@@ -105,5 +73,39 @@ public class DatabaseConfig {
         PRIMARY KEY (host, port)
       );
     """);
+  }
+
+  private final NodeConfig nodeConfig;
+
+  public DatabaseConfig(NodeConfig nodeConfig) {
+    this.nodeConfig = nodeConfig;
+  }
+
+  // Настройка пула соединений HikariCP для SQLite в режиме WAL с поддержкой параллельного чтения.
+  @Bean
+  public DataSource dataSource() {
+    HikariConfig cfg = new HikariConfig();
+    cfg.setDriverClassName("org.sqlite.JDBC");
+    cfg.setJdbcUrl("jdbc:sqlite:" + nodeConfig.dbPath);
+    cfg.setConnectionInitSql("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 10000;");
+    cfg.setMaximumPoolSize(1);
+    cfg.setConnectionTimeout(15000);
+    cfg.setIdleTimeout(600000);
+    cfg.setMaxLifetime(1800000);
+    return new HikariDataSource(cfg);
+  }
+
+  // Инициализирует JdbcTemplate и схему таблиц блокчейна.
+  @Bean
+  public JdbcTemplate jdbcTemplate(DataSource dataSource) {
+    JdbcTemplate tmpl = new JdbcTemplate(dataSource);
+    initDatabase(tmpl);
+    return tmpl;
+  }
+
+  // Настройка менеджера транзакций для поддержки @Transactional на SQLite DataSource.
+  @Bean
+  public PlatformTransactionManager transactionManager(DataSource dataSource) {
+    return new DataSourceTransactionManager(dataSource);
   }
 }
