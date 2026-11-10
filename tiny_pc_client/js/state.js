@@ -386,13 +386,13 @@ class AppState {
       NodeApi.getEstimatedFee('normal'),
       NodeApi.getEstimatedFee('high')
     ]);
-    if (low.isOk && low.data && Number.isSafeInteger(low.data.fee) && low.data.fee >= 1 && low.data.fee <= 100000000) {
+    if (low.isOk && low.data && Number.isSafeInteger(low.data.fee) && low.data.fee >= 1 && low.data.fee <= 100000) {
       this.fees.low = low.data.fee;
     }
-    if (norm.isOk && norm.data && Number.isSafeInteger(norm.data.fee) && norm.data.fee >= 1 && norm.data.fee <= 100000000) {
+    if (norm.isOk && norm.data && Number.isSafeInteger(norm.data.fee) && norm.data.fee >= 1 && norm.data.fee <= 100000) {
       this.fees.normal = norm.data.fee;
     }
-    if (high.isOk && high.data && Number.isSafeInteger(high.data.fee) && high.data.fee >= 1 && high.data.fee <= 100000000) {
+    if (high.isOk && high.data && Number.isSafeInteger(high.data.fee) && high.data.fee >= 1 && high.data.fee <= 100000) {
       this.fees.high = high.data.fee;
     }
     if (typeof m !== 'undefined') m.redraw();

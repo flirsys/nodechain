@@ -35,6 +35,9 @@ public class PeerConnection implements Runnable {
   public volatile int remotePort;
   public volatile long remoteHeight;
   public volatile long writeStartTime = 0L;
+  public volatile String sentSessionNonce;
+  public volatile String expectedClientNodeId;
+  public volatile String expectedClientNonce;
 
   // Не меньше максимального легального пакета синхронизации: 10 блоков * 500 tx
   public static final int MAX_TXS_PER_SECOND = 5000;

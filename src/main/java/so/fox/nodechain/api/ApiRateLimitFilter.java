@@ -5,6 +5,7 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
+import java.util.Iterator;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import org.springframework.core.annotation.Order;
@@ -40,9 +41,20 @@ public class ApiRateLimitFilter extends OncePerRequestFilter {
   }
 
   private boolean isAllowed(String ip) {
-    // Потолок на число бакетов: дальше считаем всех одним ведром
-    if (buckets.size() > 10_000) buckets.clear();
     long now = System.currentTimeMillis();
+    // Очистка неактивных бакетов при достижении лимита таблицы (Anti-DoS)
+    if (buckets.size() > 10_000) {
+      buckets.entrySet().removeIf(e -> (now - e.getValue()[1]) > 60_000L);
+      if (buckets.size() > 10_000) {
+        Iterator<String> it = buckets.keySet().iterator();
+        int removed = 0;
+        while (it.hasNext() && removed < 2000) {
+          it.next();
+          it.remove();
+          removed++;
+        }
+      }
+    }
     long[] bucket = buckets.computeIfAbsent(ip, k -> new long[]{MAX_TOKENS, now});
     synchronized (bucket) {
       long refill = (now - bucket[1]) / REFILL_MS;

@@ -241,6 +241,16 @@ public class BlockchainService {
     return expectedNonce;
   }
 
+  // Проверяет наличие входящих транзакций в мемпуле для адреса получателя
+  private boolean hasMempoolCredit(String address) {
+    if (address == null || mempool.isEmpty()) return false;
+    String norm = address.trim().toLowerCase();
+    for (Transaction t : mempool.values()) {
+      if (norm.equals(t.to)) return true;
+    }
+    return false;
+  }
+
   // Принимает и валидирует входящую транзакцию для mempool.
   public Result<Transaction> submitTransaction(Transaction tx, boolean isBroadcast) {
     if (tx == null) return Result.fail(409, "Транзакция отклонена");
@@ -248,6 +258,13 @@ public class BlockchainService {
     if (mempool.containsKey(tx.hash.trim().toLowerCase())) return Result.fail(409, "Конфликт nonce");
     Result<Void> validation = ConsensusUtil.validateTransactionBasics(tx, nodeConfig.chainId);
     if (validation.isError()) return Result.fail(validation.status, validation.error);
+
+    // Быстрый отсев транзакций с нулевых адресов без захвата chainLock (защита от DoS)
+    Account preCheck = accountRepository.findByAddress(tx.from).orElse(null);
+    long preBalance = preCheck != null ? preCheck.balance : 0L;
+    if (preBalance <= 0 && !hasMempoolCredit(tx.from)) {
+      return Result.fail(409, "Недостаточно средств");
+    }
 
     synchronized (chainLock) {
       Account sender = getAccount(tx.from);

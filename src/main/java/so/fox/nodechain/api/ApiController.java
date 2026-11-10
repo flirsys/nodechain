@@ -32,8 +32,7 @@ public class ApiController {
   public record FeeResponse(long fee, String priority) implements Serializable {}
   public record MempoolResponse(int count, List<Transaction> transactions) implements Serializable {}
   public record AddressTransactionsResponse(long total, List<TxResponse> txs) implements Serializable {}
-  public record SendTxRequest(String chainId, String from, String to, Long amount, Long fee, Long nonce, Long timestamp, String publicKey, String signature, String comment) implements Serializable {
-  }
+  public record SendTxRequest(String chainId, String from, String to, Long amount, Long fee, Long nonce, Long timestamp, String publicKey, String signature, String comment) implements Serializable {}
   public record SendTxResponse(String hash, String status, long addedAt, long nonce, long fee) implements Serializable {}
   @JsonInclude(JsonInclude.Include.NON_NULL)
   public record TxResponse(String hash, String from, String to, long amount, long fee, String comment, long timestamp, String status, Long blockHeight, String blockHash, Long confirmations) implements Serializable {}

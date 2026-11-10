@@ -224,6 +224,35 @@ public class P2pNetworkAndProtocolSecurityTest {
     Assertions.assertFalse(P2pClientManager.isValidHandshake(validMsg, ctx));
   }
 
+  // Проверяет защиту от Replay-атаки на Handshake и подмену направления INIT / ACK / AUTH.
+  @Test
+  public void testHandshakeDirectionAndChallengeResponseDefense() {
+    KeyPair peerKp = CryptoUtil.generateKeyPair();
+    String peerAddr = CryptoUtil.getAddressFromPublicKey(peerKp.getPublic());
+    String pubKeyStr = CryptoUtil.encodePublicKey(peerKp.getPublic());
+    long now = System.currentTimeMillis();
+    String nonce = UUID.randomUUID().toString();
+    String challenge = UUID.randomUUID().toString();
+    Map<String, Long> seenNonces = new ConcurrentHashMap<>();
+    HandshakeContext ctx = new HandshakeContext("local-id", "foxchain-main-1", now, seenNonces);
+
+    // Валидный ACK с челленджем
+    HandshakeMessage ackMsgUnsigned = new HandshakeMessage(
+      peerAddr, "foxchain-main-1", 10, "0".repeat(64), 9090, "1.0.0", now, pubKeyStr, "", nonce, "ACK", "local-id", challenge
+    );
+    String sig = CryptoUtil.sign(peerKp.getPrivate(), ackMsgUnsigned.toSignableData());
+    HandshakeMessage ackMsg = new HandshakeMessage(
+      peerAddr, "foxchain-main-1", 10, "0".repeat(64), 9090, "1.0.0", now, pubKeyStr, sig, nonce, "ACK", "local-id", challenge
+    );
+    Assertions.assertTrue(P2pClientManager.isValidHandshake(ackMsg, ctx));
+
+    // Попытка подделать направление (выдать ACK за INIT без переподписания)
+    HandshakeMessage replayedAsInit = new HandshakeMessage(
+      peerAddr, "foxchain-main-1", 10, "0".repeat(64), 9090, "1.0.0", now, pubKeyStr, sig, nonce, "INIT", "local-id", challenge
+    );
+    Assertions.assertFalse(P2pClientManager.isValidHandshake(replayedAsInit, ctx));
+  }
+
   // Проверяет немедленное закрытие соединения при получении полезных пакетов до рукопожатия.
   @Test
   public void testUnauthenticatedConnectionDropsNonHandshakePackets() throws Exception {

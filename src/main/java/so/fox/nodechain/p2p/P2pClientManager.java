@@ -13,6 +13,7 @@ import java.net.Socket;
 import java.nio.ByteBuffer;
 import java.security.PublicKey;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -74,11 +75,29 @@ public class P2pClientManager {
     long timestamp,
     String publicKey,
     String signature,
-    String sessionNonce
+    String sessionNonce,
+    String direction,
+    String targetNodeId,
+    String challengeNonce
   ) implements Serializable {
-    // Формирует каноническую строку для подписи рукопожатия.
+
+    // Конструктор совместимости для обратного вызова и тестов
+    public HandshakeMessage(
+      String nodeId, String chainId, long height, String latestBlockHash,
+      int p2pPort, String version, long timestamp, String publicKey,
+      String signature, String sessionNonce
+    ) {
+      this(nodeId, chainId, height, latestBlockHash, p2pPort, version, timestamp, publicKey, signature, sessionNonce, null, null, null);
+    }
+
+    // Формирует каноническую строку для цифровой подписи рукопожатия с защитой от Replay и спуфинга.
     public String toSignableData() {
-      return nodeId + "|" + chainId + "|" + height + "|" + latestBlockHash + "|" + p2pPort + "|" + timestamp + "|" + sessionNonce;
+      if (direction == null || direction.isBlank()) {
+        return nodeId + "|" + chainId + "|" + height + "|" + latestBlockHash + "|" + p2pPort + "|" + timestamp + "|" + sessionNonce;
+      }
+      String tgt = targetNodeId != null ? targetNodeId : "";
+      String ch = challengeNonce != null ? challengeNonce : "";
+      return nodeId + "|" + direction + "|" + tgt + "|" + chainId + "|" + height + "|" + latestBlockHash + "|" + p2pPort + "|" + timestamp + "|" + sessionNonce + "|" + ch;
     }
   }
 
@@ -100,6 +119,9 @@ public class P2pClientManager {
     if (msg.latestBlockHash() == null || !HEX_64_PATTERN.matcher(msg.latestBlockHash()).matches()) return false;
     if (msg.timestamp() <= 0 || ctx.now() < (msg.timestamp() - 60_000L) || ctx.now() > (msg.timestamp() + 120_000L)) return false;
     if (msg.sessionNonce() == null || msg.sessionNonce().isBlank() || msg.sessionNonce().length() > 64 || msg.sessionNonce().contains("|")) return false;
+    if (msg.direction() != null && msg.direction().contains("|")) return false;
+    if (msg.targetNodeId() != null && msg.targetNodeId().contains("|")) return false;
+    if (msg.challengeNonce() != null && msg.challengeNonce().contains("|")) return false;
     if (msg.publicKey() == null || msg.publicKey().isBlank()) return false;
     if (msg.signature() == null || msg.signature().isBlank()) return false;
 
@@ -113,9 +135,17 @@ public class P2pClientManager {
     if (ctx.seenNonces() == null) return false;
 
     if (ctx.seenNonces().size() >= 10_000) {
-      long cutoff = ctx.now() - 180_000L;
+      long cutoff = ctx.now() - 60_000L;
       ctx.seenNonces().entrySet().removeIf(e -> e.getValue() < cutoff);
-      if (ctx.seenNonces().size() >= 10_000) return false;
+      if (ctx.seenNonces().size() >= 10_000) {
+        Iterator<String> it = ctx.seenNonces().keySet().iterator();
+        int removed = 0;
+        while (it.hasNext() && removed < 2000) {
+          it.next();
+          it.remove();
+          removed++;
+        }
+      }
     }
     if (ctx.seenNonces().putIfAbsent(msg.sessionNonce(), ctx.now()) != null) return false;
 
@@ -358,7 +388,7 @@ public class P2pClientManager {
       Thread t = new Thread(conn, "peer-" + host + ":" + port);
       t.setDaemon(true);
       t.start();
-      sendHandshakePacket(conn, OpCode.HANDSHAKE, 0);
+      sendInitialHandshake(conn);
       return true;
     } catch (IOException err) {
       connectionSlots.release();
@@ -538,13 +568,30 @@ public class P2pClientManager {
     }
   }
 
-  private HandshakeMessage buildHandshake(Block latest) {
+  private HandshakeMessage buildHandshake(Block latest, String direction, String targetNodeId, String challengeNonce) {
     if (latest == null || nodeWalletService == null || nodeWalletService.publicKey == null || nodeWalletService.privateKey == null) return null;
     long now = System.currentTimeMillis();
     String pubKeyStr = CryptoUtil.encodePublicKey(nodeWalletService.publicKey);
     String sessionNonce = UUID.randomUUID().toString();
-    String dataToSign = nodeId + "|" + nodeConfig.chainId + "|" + latest.height + "|" + latest.hash + "|" + nodeConfig.p2pPort + "|" + now + "|" + sessionNonce;
-    String sig = CryptoUtil.sign(nodeWalletService.privateKey, dataToSign);
+    String dir = (direction != null && !direction.isBlank()) ? direction : "INIT";
+    String tgt = targetNodeId != null ? targetNodeId : "";
+    String ch = challengeNonce != null ? challengeNonce : "";
+    HandshakeMessage unsignedMsg = new HandshakeMessage(
+      nodeId,
+      nodeConfig.chainId,
+      latest.height,
+      latest.hash,
+      nodeConfig.p2pPort,
+      VERSION,
+      now,
+      pubKeyStr,
+      "",
+      sessionNonce,
+      dir,
+      tgt,
+      ch
+    );
+    String sig = CryptoUtil.sign(nodeWalletService.privateKey, unsignedMsg.toSignableData());
     return new HandshakeMessage(
       nodeId,
       nodeConfig.chainId,
@@ -555,16 +602,21 @@ public class P2pClientManager {
       now,
       pubKeyStr,
       sig,
-      sessionNonce
+      sessionNonce,
+      dir,
+      tgt,
+      ch
     );
   }
 
-  private void sendHandshakePacket(PeerConnection conn, byte opCode, int requestId) {
-    if (blockchainService == null) return;
+  // Отправляет первоначальный пакет рукопожатия исходящего соединения
+  private void sendInitialHandshake(PeerConnection conn) {
+    if (blockchainService == null || conn == null) return;
     Block latest = blockchainService.getLatestBlockHeader();
-    HandshakeMessage msg = buildHandshake(latest);
+    HandshakeMessage msg = buildHandshake(latest, "INIT", "", "");
     if (msg == null) return;
-    NodePacket pkt = NodePacket.fromJson(opCode, requestId, msg);
+    conn.sentSessionNonce = msg.sessionNonce();
+    NodePacket pkt = NodePacket.fromJson(OpCode.HANDSHAKE, 0, msg);
     if (pkt != null) conn.send(pkt);
   }
 
@@ -602,11 +654,16 @@ public class P2pClientManager {
     long minInterval = (op == OpCode.NEW_TX_ANNOUNCE || op == OpCode.BLOCKS_DATA || op == OpCode.GET_BLOCKS) ? 10L : MIN_REQUEST_INTERVAL_MS;
     String key = host + ":" + op;
 
-    if (lastRequestTime.size() >= 500) {
+    if (lastRequestTime.size() >= 5000) {
       pruneRateLimitMap(now);
-      if (lastRequestTime.size() >= 500 && !lastRequestTime.containsKey(key)) {
-        log.warn("Rate limit table full, rejecting opcode {} from {}", op, host);
-        return true;
+      if (lastRequestTime.size() >= 5000) {
+        Iterator<String> it = lastRequestTime.keySet().iterator();
+        int removed = 0;
+        while (it.hasNext() && removed < 1000) {
+          it.next();
+          it.remove();
+          removed++;
+        }
       }
     }
 
@@ -627,8 +684,8 @@ public class P2pClientManager {
   }
 
   private void pruneRateLimitMap(long now) {
-    lastRequestTime.entrySet().removeIf(e -> (now - e.getValue()) > 60_000L);
-    seenHandshakeNonces.entrySet().removeIf(e -> (now - e.getValue()) > 180_000L);
+    lastRequestTime.entrySet().removeIf(e -> (now - e.getValue()) > 30_000L);
+    seenHandshakeNonces.entrySet().removeIf(e -> (now - e.getValue()) > 120_000L);
   }
 
   private void handlePong(PeerConnection conn, NodePacket pkt) {
@@ -828,11 +885,15 @@ public class P2pClientManager {
   }
 
   private void handleHandshake(PeerConnection conn, NodePacket pkt, boolean isAck) {
-    if (conn.remoteNodeId != null || conn.isOutbound != isAck) {
+    if (conn.remoteNodeId != null) {
       conn.close();
       return;
     }
     HandshakeMessage msg = pkt.readJson(HandshakeMessage.class);
+    if (msg == null) {
+      conn.close();
+      return;
+    }
     long now = System.currentTimeMillis();
     if (!isValidHandshake(msg, new HandshakeContext(this.nodeId, nodeConfig.chainId, now, this.seenHandshakeNonces))) {
       conn.close();
@@ -842,43 +903,134 @@ public class P2pClientManager {
       conn.close();
       return;
     }
-    if (conn.isOutbound && conn.remotePort > 0 && msg.p2pPort() != conn.remotePort) {
+
+    Block local = blockchainService.getLatestBlockHeader();
+    long maxSensibleHeight = local.height + 100_000L;
+    long safeRemoteHeight = Math.min(msg.height(), maxSensibleHeight);
+
+    // Шаг 1: Сервер принимает первоначальный HANDSHAKE (INIT) от входящего узла
+    if (!isAck) {
+      if (conn.isOutbound || !"INIT".equalsIgnoreCase(msg.direction())) {
+        conn.close();
+        return;
+      }
+      conn.expectedClientNodeId = msg.nodeId();
+      conn.expectedClientNonce = msg.sessionNonce();
+      conn.remotePort = msg.p2pPort();
+      conn.remoteHeight = safeRemoteHeight;
+
+      HandshakeMessage ackMsg = buildHandshake(local, "ACK", msg.nodeId(), msg.sessionNonce());
+      if (ackMsg == null) {
+        conn.close();
+        return;
+      }
+      conn.sentSessionNonce = ackMsg.sessionNonce();
+      NodePacket ackPkt = NodePacket.fromJson(OpCode.HANDSHAKE_ACK, pkt.requestId, ackMsg);
+      if (ackPkt != null) conn.send(ackPkt);
+      return;
+    }
+
+    // Шаг 2: Клиент принимает HANDSHAKE_ACK (ACK) от сервера в ответ на свой INIT
+    if (conn.isOutbound) {
+      if (!"ACK".equalsIgnoreCase(msg.direction())) {
+        conn.close();
+        return;
+      }
+      if (conn.sentSessionNonce == null || !conn.sentSessionNonce.equals(msg.challengeNonce())) {
+        conn.close();
+        return;
+      }
+      if (!this.nodeId.equalsIgnoreCase(msg.targetNodeId())) {
+        conn.close();
+        return;
+      }
+      if (conn.remotePort > 0 && msg.p2pPort() != conn.remotePort) {
+        conn.close();
+        return;
+      }
+
+      if (shouldDropDuplicateConnection(conn, msg.nodeId())) {
+        conn.close();
+        return;
+      }
+
+      conn.remoteHeight = safeRemoteHeight;
+      conn.remoteNodeId = msg.nodeId().toLowerCase();
+      conn.remotePort = msg.p2pPort();
+      conn.setAuthorizedTimeout(30000);
+      candidatePeers.remove(new PeerInfo(conn.getRemoteHost(), msg.p2pPort(), 0L));
+      if (peerRepository != null) {
+        peerRepository.saveOrUpdate(new PeerInfo(conn.getRemoteHost(), msg.p2pPort(), now));
+      }
+
+      HandshakeMessage authMsg = buildHandshake(local, "AUTH", msg.nodeId(), msg.sessionNonce());
+      if (authMsg != null) {
+        NodePacket authPkt = NodePacket.fromJson(OpCode.HANDSHAKE_ACK, pkt.requestId, authMsg);
+        if (authPkt != null) conn.send(authPkt);
+      }
+
+      conn.send(new NodePacket(OpCode.GET_PEERS, 0, new byte[0]));
+      requestBlocksIfNeeded(conn, local, msg.height());
+      return;
+    }
+
+    // Шаг 3: Сервер принимает подтверждение HANDSHAKE_ACK (AUTH) от клиента
+    if (!"AUTH".equalsIgnoreCase(msg.direction())) {
       conn.close();
       return;
     }
+    if (conn.sentSessionNonce == null || !conn.sentSessionNonce.equals(msg.challengeNonce())) {
+      conn.close();
+      return;
+    }
+    if (!this.nodeId.equalsIgnoreCase(msg.targetNodeId())) {
+      conn.close();
+      return;
+    }
+    if (conn.expectedClientNodeId == null || !conn.expectedClientNodeId.equalsIgnoreCase(msg.nodeId())) {
+      conn.close();
+      return;
+    }
+
+    if (shouldDropDuplicateConnection(conn, msg.nodeId())) {
+      conn.close();
+      return;
+    }
+
+    conn.remoteHeight = safeRemoteHeight;
+    conn.remoteNodeId = msg.nodeId().toLowerCase();
+    conn.setAuthorizedTimeout(30000);
+    candidatePeers.remove(new PeerInfo(conn.getRemoteHost(), conn.remotePort, 0L));
+    if (peerRepository != null) {
+      peerRepository.saveOrUpdate(new PeerInfo(conn.getRemoteHost(), conn.remotePort, now));
+    }
+
+    conn.send(new NodePacket(OpCode.GET_PEERS, 0, new byte[0]));
+    requestBlocksIfNeeded(conn, local, msg.height());
+  }
+
+  // Проверяет необходимость закрытия текущего соединения при обнаружении дубликата узла
+  private boolean shouldDropDuplicateConnection(PeerConnection conn, String remoteNodeId) {
     for (PeerConnection c : connections) {
-      if (c != conn && msg.nodeId().equalsIgnoreCase(c.remoteNodeId) && c.isConnected()) {
-        boolean isThisSmaller = this.nodeId.compareToIgnoreCase(msg.nodeId()) < 0;
+      if (c != conn && remoteNodeId.equalsIgnoreCase(c.remoteNodeId) && c.isConnected()) {
+        boolean isThisSmaller = this.nodeId.compareToIgnoreCase(remoteNodeId) < 0;
         boolean isKeepCurrent = isThisSmaller ? conn.isOutbound : !conn.isOutbound;
         if (isKeepCurrent) {
           c.close();
         } else {
-          conn.close();
-          return;
+          return true;
         }
       }
     }
+    return false;
+  }
 
-    Block local = blockchainService.getLatestBlockHeader();
-    conn.remoteHeight = msg.height();
-    conn.remoteNodeId = msg.nodeId().toLowerCase();
-    conn.remotePort = msg.p2pPort();
-    conn.setAuthorizedTimeout(30000);
-    candidatePeers.remove(new PeerInfo(conn.getRemoteHost(), msg.p2pPort(), 0L));
-    if (peerRepository != null) {
-      peerRepository.saveOrUpdate(new PeerInfo(conn.getRemoteHost(), msg.p2pPort(), now));
-    }
-
-    if (!isAck) {
-      sendHandshakePacket(conn, OpCode.HANDSHAKE_ACK, pkt.requestId);
-    }
-    conn.send(new NodePacket(OpCode.GET_PEERS, 0, new byte[0]));
-
-    if (msg.height() > local.height) {
-      long fromHeight = (local.height > 0) ? Math.max(1, local.height - 5) : 0;
-      GetBlocksRequest req = new GetBlocksRequest(fromHeight, 100);
-      NodePacket p = NodePacket.fromJson(OpCode.GET_BLOCKS, 0, req);
-      if (p != null) conn.send(p);
-    }
+  // Запрашивает блоки у пира, если его цепь длиннее локальной
+  private static void requestBlocksIfNeeded(PeerConnection conn, Block local, long remoteHeight) {
+    if (remoteHeight <= local.height) return;
+    long fromHeight = (local.height > 0) ? Math.max(1, local.height - 5) : 0;
+    GetBlocksRequest req = new GetBlocksRequest(fromHeight, 100);
+    NodePacket p = NodePacket.fromJson(OpCode.GET_BLOCKS, 0, req);
+    if (p != null) conn.send(p);
   }
 }

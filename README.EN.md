@@ -171,8 +171,8 @@ Nodes communicate using custom binary framing over direct TCP sockets:
 
 | OpCode | Hex | Name | Purpose |
 | :---: | :---: | :--- | :--- |
-| **1** | `0x01` | `HANDSHAKE` | Mutual signed handshake containing `sessionNonce`. |
-| **2** | `0x02` | `HANDSHAKE_ACK` | Handshake acknowledgment and chain state. |
+| **1** | `0x01` | `HANDSHAKE` | Signed initiation (INIT) with ephemeral clientNonce. |
+| **2** | `0x02` | `HANDSHAKE_ACK` | Mutual challenge-response (ACK / AUTH) with targetNodeId binding. |
 | **3** | `0x03` | `PING` | Keep-alive ping (sent every 20s). |
 | **4** | `0x04` | `PONG` | Ping reply with peer chain height. |
 | **16** | `0x10` | `GET_PEERS` | Request known network peer list. |

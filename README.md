@@ -171,8 +171,8 @@ flowchart TB
 
 | OpCode | Hex | Название | Описание |
 | :---: | :---: | :--- | :--- |
-| **1** | `0x01` | `HANDSHAKE` | Подписанное приветствие с `sessionNonce` против Replay. |
-| **2** | `0x02` | `HANDSHAKE_ACK` | Подтверждение рукопожатия и статус локальной цепи. |
+| **1** | `0x01` | `HANDSHAKE` | Подписанное приветствие (INIT) с ephemeral clientNonce. |
+| **2** | `0x02` | `HANDSHAKE_ACK` | Двусторонний challenge-response (ACK / AUTH) с привязкой targetNodeId. |
 | **3** | `0x03` | `PING` | Keep-alive пинг (каждые 20 с). |
 | **4** | `0x04` | `PONG` | Ответ на пинг с высотой цепи. |
 | **16** | `0x10` | `GET_PEERS` | Запрос таблицы известных узлов сети. |
